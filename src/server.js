@@ -51,6 +51,15 @@ app.addHook('onSend', async (req, reply) => {
     "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-ancestors 'none'");
 });
 
+// HTML pages are returned as strings — serve them as text/html (Fastify
+// defaults string payloads to text/plain, which browsers render as source).
+app.addHook('onSend', async (req, reply, payload) => {
+  if (typeof payload === 'string' && payload.startsWith('<!doctype html>')) {
+    reply.header('Content-Type', 'text/html; charset=utf-8');
+  }
+  return payload;
+});
+
 // ---------- structured logging (never secrets: no headers, no keys, no bodies) ----------
 function logEvent(ev) {
   process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), svc: 'ciptamodel', ...ev }) + '\n');
@@ -140,6 +149,14 @@ const limiter = createMemoryBackend();
 function getPlan(name) {
   const row = getDb().prepare('SELECT * FROM plans WHERE name = ?').get(name || 'free');
   return row || getDb().prepare('SELECT * FROM plans WHERE name = ?').get('free');
+}
+
+// Display order: free → developer → pro → enterprise (DB has no rank column;
+// requests_per_day would sort enterprise(-1) first).
+const PLAN_ORDER = { free: 0, developer: 1, pro: 2, enterprise: 3 };
+function orderedPlans() {
+  return getDb().prepare('SELECT * FROM plans').all()
+    .sort((a, b) => (PLAN_ORDER[a.name] ?? 9) - (PLAN_ORDER[b.name] ?? 9));
 }
 
 function dayStartIso() {
@@ -235,34 +252,51 @@ const DASH_NAV = [
 ];
 
 function layout({ title, user, active, body, dash = true }) {
-  const links = (dash ? DASH_NAV : []).map(([label, href, kind]) => kind === 'sec'
+  if (!dash) return publicShell({ title, body: `<div class="wrap section tight">${body}</div>` });
+  const links = DASH_NAV.map(([label, href, kind]) => kind === 'sec'
     ? `<div class="navsec">${label}</div>`
     : `<a href="${href}" class="${active === label ? 'active' : ''}">${label}</a>`).join('');
-  const side = dash
-    ? `<aside class="sidebar" aria-label="Dashboard navigation"><div class="brand">Cipta<span>Model</span></div>
+  const side = `<aside class="sidebar" aria-label="Dashboard navigation"><div class="brand"><span class="mark">C<i>.</i></span>CiptaModel</div>
        <nav class="nav">${links}</nav>
-       <div class="side-foot">${user ? `${esc(user.email)}<br><a href="/logout" style="color:#93c5fd">Sign out</a>` : '<a href="/login" style="color:#93c5fd">Sign in</a>'}</div></aside>`
-    : '';
+       <div class="side-foot">${user ? `${esc(user.email)}<br><a href="/logout" style="color:#93c5fd">Sign out</a>` : '<a href="/login" style="color:#93c5fd">Sign in</a>'}</div></aside>`;
   return `<!doctype html><html lang="id"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#08111F">
 <title>${esc(title)} · CiptaModel</title><link rel="stylesheet" href="${CSS}"></head><body>
+<a class="skip" href="#main">Skip to content</a>
 <div class="shell">${side}
 <div class="main"><div class="topbar"><button class="menu-btn" data-action="menu" aria-label="Toggle navigation">☰</button>
-<strong>${esc(title)}</strong><span class="who">Gateway: <code class="inline">/v1</code> · OpenAI-compatible</span></div>
-<main class="content">${body}</main></div></div>
-<script src="/app.js"></script></body></html>`;
+<strong>${esc(title)}</strong><span class="who"><span class="dot" aria-hidden="true"></span><span>Gateway <code class="inline">/v1</code> · OpenAI-compatible</span>${user ? `<span class="badge info">${esc(user.plan || 'free')}</span>` : ''}</span></div>
+<main class="content" id="main">${body}</main></div></div>
+<script src="/app.js" defer></script></body></html>`;
 }
 
-function publicShell({ title, body }) {
+function publicShell({ title, body, desc }) {
+  const d = desc || 'CiptaModel — one OpenAI-compatible API for multiple AI models. One key, one base URL.';
   return `<!doctype html><html lang="id"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="${esc(d)}">
+<meta name="theme-color" content="#08111F">
 <title>${esc(title)} · CiptaModel</title><link rel="stylesheet" href="${CSS}"></head><body>
-<header class="pubnav"><div class="pubnav-in"><a class="pubbrand" href="/">Cipta<span>Model</span></a>
-<nav aria-label="Public"><a href="/models">Models</a><a href="/pricing">Pricing</a><a href="/docs">Docs</a><a href="/login">Sign in</a><a class="btn sm" href="/register">Get started</a></nav></div></header>
-${body}
-<footer class="pubfoot"><div class="pubfoot-in"><span><strong>CiptaModel</strong> — One API. Multiple AI Models.</span>
-<span><a href="/docs">Docs</a> · <a href="/pricing">Pricing</a> · <a href="/docs/quickstart">Quickstart</a> · <a href="/login">Sign in</a></span></div></footer>
-</body></html>`;
+<a class="skip" href="#main">Skip to content</a>
+<header class="pubnav" id="pubnav"><div class="pubnav-in"><a class="pubbrand" href="/"><span class="mark">C<i>.</i></span>Cipta<span>Model</span></a>
+<button class="pubmenu-btn" data-action="pubmenu" aria-label="Toggle menu" aria-expanded="false">☰</button>
+<nav aria-label="Public"><a class="navlink" href="/models">Models</a><a class="navlink" href="/pricing">Pricing</a><a class="navlink" href="/docs">Docs</a><a class="navlink" href="https://github.com/ReinaldyDwiAllailKusnadi/ciptamodel">GitHub</a><a class="navlink" href="/login">Sign in</a><a class="btn sm" href="/register">Get started</a></nav></div></header>
+<main id="main">${body}</main>
+<footer class="pubfoot"><div class="pubfoot-in">
+<div><a class="pubbrand" href="/"><span class="mark">C<i>.</i></span>Cipta<span>Model</span></a>
+<p class="brandline">One OpenAI-compatible API for multiple AI models. One key, one base URL — swap providers without rewriting your integration.</p></div>
+<div><h4>PRODUCT</h4><ul><li><a href="/models">Models</a></li><li><a href="/pricing">Pricing</a></li><li><a href="/dashboard">Dashboard</a></li><li><a href="/dashboard/playground">Playground</a></li></ul></div>
+<div><h4>DEVELOPERS</h4><ul><li><a href="/docs">Documentation</a></li><li><a href="/docs/quickstart">Quickstart</a></li><li><a href="/sdk">SDK</a></li><li><a href="/examples">Examples</a></li><li><a href="/docs/cursor">Cursor setup</a></li><li><a href="/docs/open-webui">Open WebUI setup</a></li></ul></div>
+<div><h4>CIPTAMODEL</h4><ul><li><a href="https://github.com/ReinaldyDwiAllailKusnadi/ciptamodel">GitHub</a></li><li><a href="/healthz">API status</a></li><li><a href="/login">Sign in</a></li><li><a href="/register">Get started</a></li></ul></div>
+</div><div class="pubfoot-base"><span>© ${new Date().getFullYear()} CiptaModel</span><span>Gateway <code class="inline">/v1</code> · OpenAI-compatible · Base URL <code class="inline">${esc(config.publicApiBaseUrl)}</code></span></div></footer>
+<script src="/app.js" defer></script></body></html>`;
+}
+
+function errPage(status, heading, msg) {
+  return publicShell({ title: heading, body: `<div class="wrap"><div class="err"><div>
+<p class="code">ERROR ${status}</p><h1>${esc(heading)}</h1><p>${esc(msg)}</p>
+<p><a class="btn" href="/">Back home</a> &nbsp; <a class="btn ghost" href="/docs">Read the docs</a></p></div></div></div>` });
 }
 
 function phase2Badge() {
@@ -270,100 +304,196 @@ function phase2Badge() {
 }
 
 const views = {
-  landing() {
+  landing(providers, plans) {
+    const provs = providers || [];
+    const chips = provs.map((pr) =>
+      `<span class="pchip${pr.enabled ? ' on' : ''}">${esc(pr.name)} · ${pr.enabled ? 'enabled' : 'disabled'}</span>`).join('');
+    const route = `<div class="route" aria-label="Gateway routing diagram">
+<div class="route-flow">
+<div class="rnode"><div class="rl">CLIENT</div><div class="rv mono">your app</div></div><span class="rarrow" aria-hidden="true">→</span>
+<div class="rnode lit"><div class="rl">GATEWAY</div><div class="rv mono">ciptamodel /v1</div></div><span class="rarrow" aria-hidden="true">→</span>
+<div class="rnode"><div class="rl">ROUTER</div><div class="rv mono">stable model IDs</div></div>
+</div>
+<div class="route-provs"><span class="route-cap">PROVIDERS</span>${chips || '<span class="pchip">—</span>'}</div></div>`;
+    const planStrip = (plans || []).map((p) =>
+      `<div class="plan${p.name === 'free' ? ' hot' : ''}"><h3>${esc(String(p.name).toUpperCase())}</h3>
+<div class="price">${p.name === 'free' ? '$0' : 'Soon'}</div>
+<ul><li>${p.requests_per_day < 0 ? 'Unlimited requests' : `${Number(p.requests_per_day).toLocaleString()} req/day`}</li>
+<li>${p.tokens_per_day < 0 ? 'Unlimited tokens' : `${Number(p.tokens_per_day).toLocaleString()} tokens/day`}</li>
+<li>${p.rpm < 0 ? 'No rate cap' : `${p.rpm} req/min`}</li></ul></div>`).join('');
     return publicShell({ title: 'One API. Multiple AI Models', body: `
-<div class="landing"><div class="hero">
-<p class="eyebrow">UNIFIED AI API GATEWAY</p>
+<section class="hero-band"><div class="wrap hero-grid">
+<div><p class="eyebrow">UNIFIED AI API GATEWAY</p>
 <h1>One API.<br>Multiple AI Models.</h1>
-<p>CiptaModel gives developers a single OpenAI-compatible interface for many AI models. One <code class="inline">sk-cm-…</code> key, one base URL — swap providers without rewriting your integration.</p>
-<p><a class="btn" href="/register">Get started free</a> &nbsp; <a class="btn ghost" href="/docs">Read the docs</a></p>
-<pre style="text-align:left" aria-label="API code preview">curl ${esc(config.publicApiBaseUrl)}/chat/completions \\
-  -H "Authorization: Bearer sk-cm-live-..." \\
-  -H "Content-Type: application/json" \\
-  -d '{"model": "deepseek-v4.1-flash",
-       "messages": [{"role": "user", "content": "Hello"}]}'</pre>
-<p><small>Live gateway — point any OpenAI-compatible client at the base URL above.</small></p>
-</div>
-<h2 style="text-align:center">How it works</h2>
-<div class="feat">
-<div class="card"><h3>1 · GET A KEY</h3><div class="stat" style="font-size:19px">sk-cm-live-…</div><small>Create one key in the dashboard. Hashed at rest, shown once.</small></div>
-<div class="card"><h3>2 · POINT YOUR CLIENT</h3><div class="stat" style="font-size:19px">/v1 base URL</div><small>Cursor, Cline, Open WebUI, or any OpenAI SDK.</small></div>
-<div class="card"><h3>3 · PICK A MODEL</h3><div class="stat" style="font-size:19px">Stable IDs</div><small>Providers change behind the scenes. Your code stays the same.</small></div>
-</div>
-<h2 style="text-align:center">Why CiptaModel</h2>
-<div class="feat">
-<div class="card"><h3>OPENAI-COMPATIBLE</h3><small>Drop-in <code class="inline">/v1</code> API: chat completions, SSE streaming, standard error shapes.</small></div>
-<div class="card"><h3>MODEL ROUTER</h3><small>Registry-driven routing with per-model fallback — no provider lock-in.</small></div>
-<div class="card"><h3>BUILT FOR TEAMS</h3><small>Per-key quotas, rate limits, request logs, and usage metering from day one.</small></div>
-</div>
-<h2 style="text-align:center">Pricing preview</h2>
-<div class="feat">
-<div class="card"><h3>FREE</h3><div class="stat" style="font-size:19px">$0</div><small>100 req/day · 50K tokens/day · community support.</small></div>
-<div class="card"><h3>DEVELOPER</h3><div class="stat" style="font-size:19px">Soon</div><small>5K req/day · 2M tokens/day · higher rate limits.</small></div>
-<div class="card"><h3>PRO / ENTERPRISE</h3><div class="stat" style="font-size:19px">Soon</div><small>High volume, custom quotas, priority support. <a href="/pricing">Details →</a></small></div>
-</div>
-<h2 style="text-align:center">FAQ</h2>
-<div class="card"><h3>IS THE API LIVE?</h3><small>Yes — <code class="inline">POST /v1/chat/completions</code> serves real DeepSeek inference through the gateway (Bearer key required). Without server-side provider credentials it returns an honest <code class="inline">503 provider_not_connected</code>.</small></div><br>
-<div class="card"><h3>WHICH CLIENTS ARE SUPPORTED?</h3><small>Anything speaking OpenAI-compatible HTTP: Cursor, Cline, Roo Code, Claude Code, Aider, Open WebUI, and the official OpenAI SDKs.</small></div><br>
-<div class="card"><h3>CAN I CHANGE PROVIDERS LATER?</h3><small>Yes — that is the point. Your client talks to CiptaModel; the router picks the provider. Model IDs stay stable.</small></div><br>
-<p style="text-align:center"><a class="btn" href="/register">Create your free account</a></p>
-</div>` });
+<p class="hero-sub">CiptaModel gives developers a single OpenAI-compatible interface for many AI models. One <code class="inline">sk-cm-…</code> key, one base URL — swap providers without rewriting your integration.</p>
+<div class="hero-cta"><a class="btn lg" href="/register">Get started free</a><a class="btn light lg" href="/docs">Read the docs</a></div>
+<div class="hero-meta"><span><span class="dot"></span>OpenAI-compatible</span><span><span class="dot"></span>Streaming (SSE)</span><span><span class="dot"></span>X-Request-ID tracing</span></div></div>
+<div class="term" role="img" aria-label="Example API request through the CiptaModel gateway">
+<div class="term-bar"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span><span class="term-title">POST /v1/chat/completions</span><span class="term-live"><i></i>LIVE</span></div>
+<pre class="term-body"><span class="c"># one base URL, one key — any OpenAI client</span>
+<span class="k">curl</span> ${esc(config.publicApiBaseUrl)}/chat/completions \\
+  -H <span class="s">"Authorization: Bearer sk-cm-live-••••••••"</span> \\
+  -H <span class="s">"Content-Type: application/json"</span> \\
+  -d <span class="s">'{"model": "deepseek-v4.1-flash",
+       "messages": [{"role": "user",
+                     "content": "Hello"}]}'</span>
+
+<span class="c"># → 200 OK · OpenAI-shaped response + usage</span>
+<span class="c"># x-request-id: cm_req_… on every reply</span></pre>
+<div class="term-meta"><span><span class="ok">200 OK</span> · chat.completion</span><span>usage: prompt / completion / total</span><span>stream: SSE + [DONE]</span></div>
+</div></div>
+<div class="wrap" style="padding-bottom:var(--s12)">${route}</div></section>
+
+<section class="section"><div class="wrap">
+<div class="section-head"><p class="kicker">HOW IT WORKS</p><h2>From key to inference in four steps.</h2>
+<p>Your client only ever talks to CiptaModel. Everything behind the base URL — providers, failover, metering — is our problem.</p></div>
+<div class="steps">
+<div class="step"><div class="n">01</div><h3>Create an API key</h3><p>One <code class="inline">sk-cm-live-…</code> key in the dashboard. Hashed at rest, shown once.</p></div>
+<div class="step"><div class="n">02</div><h3>Use one base URL</h3><p>Point any OpenAI-compatible client at the gateway base URL (<code class="inline">/v1</code>).</p></div>
+<div class="step"><div class="n">03</div><h3>Select a model</h3><p>Your code never names a provider — it uses stable public IDs.</p></div>
+<div class="step"><div class="n">04</div><h3>CiptaModel routes it</h3><p>Validation → router → provider adapter, with retry and fallback on transient failures.</p></div>
+</div></div></section>
+
+<section class="section split"><div class="wrap">
+<div class="section-head"><p class="kicker">MODEL REGISTRY</p><h2>One API, a growing provider ecosystem.</h2>
+<p>Public model IDs stay stable even when upstream providers change. Only enabled models accept traffic. <a href="/models">Open the registry →</a></p></div>
+<div class="table-scroll"><table><tr><th>MODEL</th><th>PROVIDER</th><th>CONTEXT</th><th>STATUS</th><th>CAPABILITIES</th></tr>
+${(listModelsSafe()).map((m) => `<tr><td><strong>${esc(m.display_name)}</strong><span class="sub mono">${esc(m.id)}</span></td>
+<td class="mono">${esc(m.provider)}</td><td style="white-space:nowrap">${Number(m.context_window).toLocaleString()}</td>
+<td>${m.enabled ? '<span class="badge ok">Available</span>' : '<span class="badge bad">Disabled</span>'}</td>
+<td>${(m.capabilities || []).map((c) => `<span class="badge info">${esc(c)}</span>`).join(' ')}</td></tr>`).join('')}</table></div>
+<p><small class="muted">Configured providers serve live traffic; the rest stay honestly disabled until credentials are added server-side — the API shape never changes.</small></p>
+</div></section>
+
+<section class="section"><div class="wrap">
+<div class="section-head"><p class="kicker">DEVELOPER EXPERIENCE</p><h2>Change the base URL. Keep your integration.</h2>
+<p>CiptaModel speaks the OpenAI API — every OpenAI SDK works unmodified, including streaming, tool calls, and standard error shapes.</p></div>
+<div class="grid c2">
+<div><pre>from openai import OpenAI
+
+client = OpenAI(
+    base_url="${esc(config.publicApiBaseUrl)}",
+    api_key="sk-cm-live-...",
+)
+r = client.chat.completions.create(
+    model="deepseek-v4.1-flash",
+    messages=[{"role": "user",
+               "content": "Hello"}],
+)
+print(r.choices[0].message.content)</pre></div>
+<div><h3 style="margin-top:0">Works where you already work</h3>
+<p class="muted" style="font-size:14px">Drop-in OpenAI-compatible clients — no plugins, no rewrites:</p>
+<div class="chips"><span class="chip">Cursor</span><span class="chip">Cline / Roo Code</span><span class="chip">Claude Code</span><span class="chip">Aider</span><span class="chip">Open WebUI</span><span class="chip">Python <small>openai</small></span><span class="chip">Node.js <small>openai</small></span><span class="chip">cURL</span></div>
+<ul class="seclist" style="grid-template-columns:1fr"><li><strong>Stable model IDs</strong><span>Providers change behind the scenes; your code stays the same.</span></li>
+<li><strong>Streaming included</strong><span>SSE chunks in OpenAI format, terminated by data: [DONE].</span></li></ul>
+<p><a class="btn ghost sm" href="/docs/quickstart">Quickstart →</a> &nbsp; <a class="btn ghost sm" href="/sdk">SDK snippets →</a></p></div>
+</div></div></section>
+
+<section class="section split"><div class="wrap">
+<div class="section-head"><p class="kicker">WHY CIPTAMODEL</p><h2>Infrastructure, not another chatbot wrapper.</h2></div>
+<div class="frows">
+<div class="frow"><h3><span class="n">01</span>ONE API</h3><p>Unified OpenAI-compatible interface — <code class="inline">/v1/models</code>, <code class="inline">/v1/chat/completions</code>, SSE streaming, standard errors. One integration covers every provider.</p></div>
+<div class="frow"><h3><span class="n">02</span>MODEL ROUTING</h3><p>Registry-driven routing with per-model fallback. Transient upstream failures retry once, then fail over to a configured fallback — providers stay swappable without client changes.</p></div>
+<div class="frow"><h3><span class="n">03</span>OBSERVABILITY</h3><p>Every call records model, provider, input/output tokens, latency, status, and error code. Per-key usage, request logs, and <code class="inline">X-Request-ID</code> tracing from day one.</p></div>
+<div class="frow"><h3><span class="n">04</span>SECURITY</h3><p>API-key isolation per account, server-side provider credentials, hashed secrets, rate limits, and request validation before any upstream contact.</p></div>
+</div></div></section>
+
+<section class="section"><div class="wrap">
+<div class="section-head"><p class="kicker">SECURITY</p><h2>Serious defaults for API infrastructure.</h2>
+<p>Verified in the running codebase — not marketing claims. Provider credentials never leave the server; gateway errors never leak secrets, stacks, or paths.</p></div>
+<ul class="seclist">
+<li><strong>Hashed secrets</strong><span>API keys stored as SHA-256, passwords as bcrypt. Full key shown once, never recoverable.</span></li>
+<li><strong>Server-side credentials</strong><span>Provider API keys live in server config only — never in logs, errors, DB, or browser.</span></li>
+<li><strong>Key isolation</strong><span>Keys are scoped per account; revoked keys fail closed with 401.</span></li>
+<li><strong>Rate limits + quotas</strong><span>Per key, user, IP, and model — plus daily request/token quotas per plan.</span></li>
+<li><strong>Request validation first</strong><span>Bodies validated before any rate-limit, quota, or upstream contact.</span></li>
+<li><strong>SSRF-safe by construction</strong><span>Clients can never supply a fetch URL; adapters use fixed server-side endpoints.</span></li>
+<li><strong>Secure sessions + CSRF</strong><span>HttpOnly, SameSite=Lax cookies (Secure in production) with per-session CSRF tokens.</span></li>
+<li><strong>Traceable errors</strong><span>OpenAI-shaped errors with request_id + X-Request-ID header on every gateway reply.</span></li>
+</ul></div></section>
+
+<section class="section split"><div class="wrap">
+<div class="section-head"><p class="kicker">PRICING</p><h2>Start free. Upgrade when usage grows.</h2>
+<p>Quotas are enforced per plan — no surprise bills. Platform pricing below; per-model metering activates with billing. <a href="/pricing">Full details →</a></p></div>
+<div class="plans">${planStrip}</div>
+</div></section>
+
+<section class="section"><div class="wrap">
+<div class="section-head"><p class="kicker">FAQ</p><h2>Honest answers.</h2></div>
+<div class="faq">
+<details open><summary>Is the API live?</summary><p>Yes — <code class="inline">POST /v1/chat/completions</code> serves real DeepSeek inference through the gateway with a Bearer key. Without server-side provider credentials it returns an honest <code class="inline">503 provider_not_connected</code> instead of a fake reply.</p></details>
+<details><summary>Which clients are supported?</summary><p>Anything speaking OpenAI-compatible HTTP: Cursor, Cline, Roo Code, Claude Code, Aider, Open WebUI, and the official OpenAI SDKs. Setup guides live in <a href="/docs">Docs</a>.</p></details>
+<details><summary>Can I change providers later?</summary><p>Yes — that is the point. Your client talks to CiptaModel; the router picks the provider. Model IDs stay stable.</p></details>
+</div></div></section>
+
+<section class="section tight"><div class="wrap">
+<div class="cta-band"><div class="grow"><h2>One endpoint. Multiple models. Built for developers.</h2>
+<p>Free tier included · No credit card required · Live in minutes</p></div>
+<div class="row-btns"><a class="btn lg" href="/register">Get started</a><a class="btn light lg" href="/docs">Read the docs</a></div></div>
+</div></section>` });
   },
 
   pricing(plans) {
     const cards = plans.map((p) => {
       const name = String(p.name).toUpperCase();
       const req = p.requests_per_day < 0 ? 'Unlimited requests' : `${Number(p.requests_per_day).toLocaleString()} req/day`;
-      const tok = p.tokens_per_day < 0 ? 'unlimited tokens' : `${Number(p.tokens_per_day).toLocaleString()} tokens/day`;
+      const tok = p.tokens_per_day < 0 ? 'Unlimited tokens' : `${Number(p.tokens_per_day).toLocaleString()} tokens/day`;
       const rpm = p.rpm < 0 ? 'no rate cap' : `${p.rpm}/min`;
-      return `<div class="card"><h3>${esc(name)}</h3><div class="stat" style="font-size:19px">${p.name === 'free' ? '$0' : 'Soon'}</div><small>${req} · ${tok} · ${rpm}.</small></div>`;
+      return `<div class="plan${p.name === 'free' ? ' hot' : ''}"><h3>${esc(name)}${p.name === 'free' ? ' · CURRENT DEFAULT' : ''}</h3>
+<div class="price">${p.name === 'free' ? '$0' : 'Soon'}</div>
+<ul><li>${req}</li><li>${tok}</li><li>${rpm}</li></ul></div>`;
     }).join('');
     return publicShell({ title: 'Pricing', body: `
-<div class="landing"><div class="hero"><h1>Pricing</h1>
-<p>Start free. Upgrade when your usage grows. Quotas are enforced per plan — no surprise bills.</p></div>
-<div class="feat" style="grid-template-columns:repeat(4,1fr)">${cards}</div>
-<p style="text-align:center"><a class="btn" href="/register">Start free</a> &nbsp; <a class="btn ghost" href="/docs">Read the docs</a></p>
-<p style="text-align:center"><small>Payments activate after Phase 1. Current billing state is tracked in <a href="/dashboard/billing">your dashboard</a>.</small></p></div>` });
+<div class="wrap section"><div class="section-head"><p class="kicker">PRICING</p><h2>Start free. Upgrade when your usage grows.</h2>
+<p>Quotas are enforced per plan — no surprise bills. These are platform quotas; per-model metered costs activate with billing.</p></div>
+<div class="plans">${cards}</div>
+<div class="grid c2" style="margin-top:var(--s8)">
+<div class="card"><h3>PLATFORM VS MODEL COSTS</h3><p class="muted" style="font-size:14px;margin:0">Plans above control gateway throughput (requests, tokens, rate). Individual model prices are tracked in the registry and appear as cost estimates on responses once billing activates.</p></div>
+<div class="card"><h3>CURRENT STATE</h3><p class="muted" style="font-size:14px;margin:0 0 12px">Payments activate after Phase 1. Your plan, quota, and usage are already tracked in the dashboard.</p><p style="margin:0"><a class="btn sm" href="/register">Start free</a> &nbsp; <a class="btn ghost sm" href="/dashboard/billing">Open billing</a></p></div>
+</div></div>` });
   },
 
   auth(mode, error) {
     const isReg = mode === 'register';
     return layout({ title: isReg ? 'Create account' : 'Sign in', user: null, active: '', dash: false, body: `
-<h1>${isReg ? 'Create your account' : 'Welcome back'}</h1>
+<div class="auth-card"><h1>${isReg ? 'Create your account' : 'Welcome back'}</h1>
 <p class="sub">${isReg ? 'Free tier included. No credit card required.' : 'Sign in to your CiptaModel console.'}</p>
 ${error ? `<div class="alert bad" role="alert">${esc(error)}</div>` : ''}
-<form method="post" action="/${mode}" class="form-narrow">
-<label for="email">Email</label><input id="email" type="email" name="email" required autocomplete="email">
-<label for="password">Password <small style="font-weight:400">(min 8 characters, hashed with bcrypt)</small></label><input id="password" type="password" name="password" required minlength="8" autocomplete="${isReg ? 'new-password' : 'current-password'}">
-<p><button class="btn" type="submit">${isReg ? 'Create account' : 'Sign in'}</button></p>
-<p><small>${isReg ? 'Have an account? <a href="/login">Sign in</a>' : 'New here? <a href="/register">Create an account</a>'}</small></p>
-</form>` });
+<form method="post" action="/${mode}">
+<label for="email">Email</label><input id="email" type="email" name="email" required autocomplete="email" placeholder="you@company.com">
+<label for="password">Password${isReg ? ' <span class="muted" style="font-weight:400">(min 8 characters)</span>' : ''}</label><input id="password" type="password" name="password" required minlength="8" autocomplete="${isReg ? 'new-password' : 'current-password'}" placeholder="••••••••••">
+<p style="margin-top:16px"><button class="btn" style="width:100%" type="submit">${isReg ? 'Create account' : 'Sign in'}</button></p>
+<p><small class="muted">${isReg ? 'Have an account? <a href="/login">Sign in</a>' : 'New here? <a href="/register">Create an account</a>'}</small></p>
+</form></div>` });
   },
 
   dashboard(user, s, providers) {
-    const card = (h, v, sub) => `<div class="card"><h3>${h}</h3><div class="stat">${v}</div><small>${sub}</small></div>`;
+    const stat = (l, v, sub) => `<div class="stat-cell"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${sub}</div></div>`;
+    const badgeFor = (st) => st === 'connected' || st === 'configured'
+      ? `<span class="badge ok">${esc(st)}</span>`
+      : (st === 'not_configured' || st === 'pending_credentials' ? `<span class="badge warn">${esc(st)}</span>` : `<span class="badge dim">${esc(st)}</span>`);
     const provRows = providers.map((p) =>
-      `<tr><td><strong>${esc(p.display_name)}</strong></td><td class="mono">${esc(p.name)}</td>
-       <td>${p.enabled ? '<span class="badge info">Enabled</span>' : '<span class="badge">Disabled</span>'}</td>
-       <td><span class="badge ${p.status === 'connected' || p.status === 'configured' ? 'ok' : 'warn'}">${esc(p.status)}</span></td></tr>`).join('');
+      `<tr><td><strong>${esc(p.display_name)}</strong><span class="sub mono">${esc(p.name)}</span></td>
+       <td>${p.enabled ? '<span class="badge info">Enabled</span>' : '<span class="badge dim">Disabled</span>'}</td>
+       <td>${badgeFor(p.status)}</td></tr>`).join('');
     const recent = (s.recent || []).map((r) => `<tr><td class="mono"><small>${esc(r.created_at)}</small></td>
 <td class="mono">${esc(r.model_id)}</td><td>${r.total_tokens}</td>
 <td>${r.status === 'success' ? '<span class="badge ok">ok</span>' : `<span class="badge bad">${esc(r.error_code || r.status)}</span>`}</td></tr>`).join('');
     return layout({ title: 'Dashboard', user, active: 'Dashboard', body: `
 <h1>Dashboard</h1><p class="sub">Plan <span class="badge info">${esc(user.plan)}</span> · Gateway <code class="inline">${esc(config.publicApiBaseUrl)}</code></p>
-<div class="grid c4">
-${card('Total requests', s.total ?? 0, 'logged gateway calls')}
-${card('Total tokens', Number(s.tokens ?? 0).toLocaleString(), 'input + output')}
-${card('Active API keys', s.activeKeys ?? 0, '<a href="/dashboard/api-keys">manage keys →</a>')}
-${card('Error rate', (s.errRate ?? '0%'), 'failed / total · p50 ' + (s.p50 ?? '—') + ' ms')}
-</div><br>
+<div class="stats">
+${stat('Total requests', s.total ?? 0, 'logged gateway calls')}
+${stat('Total tokens', Number(s.tokens ?? 0).toLocaleString(), 'input + output')}
+${stat('Active API keys', s.activeKeys ?? 0, '<a href="/dashboard/api-keys">manage keys →</a>')}
+${stat('Error rate', (s.errRate ?? '0%'), 'failed / total · p50 ' + (s.p50 ?? '—') + ' ms')}
+</div>
 <div class="grid c2">
-<div class="card"><h3>SYSTEM STATUS — PROVIDERS</h3>
-<table><tr><th>PROVIDER</th><th>ID</th><th>REGISTRY</th><th>CONNECTION</th></tr>${provRows}</table>
-<p><small>Gateway status: live DeepSeek adapter when <code class="inline">DEEPSEEK_API_KEY</code> is configured server-side, otherwise honest <code class="inline">503 provider_not_connected</code> — statuses flip without API changes.</small></p></div>
-<div class="card"><h3>RECENT REQUESTS</h3>
-${recent ? `<table><tr><th>TIME</th><th>MODEL</th><th>TOKENS</th><th>STATUS</th></tr>${recent}</table><p><a href="/dashboard/logs">All logs →</a></p>`
-  : '<div class="empty">No requests yet. Logs will appear here once the gateway is used.</div>'}</div>
+<div class="card"><div class="panel-head"><h3>SYSTEM STATUS — PROVIDERS</h3></div>
+<div class="table-scroll"><table style="min-width:0"><tr><th>PROVIDER</th><th>REGISTRY</th><th>CONNECTION</th></tr>${provRows}</table></div>
+<p><small class="muted">Live DeepSeek adapter when <code class="inline">DEEPSEEK_API_KEY</code> is configured server-side, otherwise honest <code class="inline">503 provider_not_connected</code> — statuses flip without API changes.</small></p></div>
+<div class="card"><div class="panel-head"><h3>RECENT REQUESTS</h3><span class="spacer" style="flex:1"></span><a href="/dashboard/logs"><small>All logs →</small></a></div>
+${recent ? `<div class="table-scroll"><table><tr><th>TIME</th><th>MODEL</th><th>TOKENS</th><th>STATUS</th></tr>${recent}</table></div>`
+  : '<div class="empty"><strong>No requests yet</strong>Logs will appear here once the gateway is used.</div>'}</div>
 </div>` });
   },
 
@@ -371,45 +501,46 @@ ${recent ? `<table><tr><th>TIME</th><th>MODEL</th><th>TOKENS</th><th>STATUS</th>
     const rows = keys.map((k) => {
       const u = (usageByKey || {})[k.id] || { n: 0, t: 0 };
       return `<tr>
-<td><strong>${esc(k.name)}</strong><br><small style="color:var(--muted)">${esc(shortId(k.id))} · created ${esc((k.created_at || '').slice(0, 10))}</small></td>
+<td><strong>${esc(k.name)}</strong><span class="sub">${esc(shortId(k.id))} · created ${esc((k.created_at || '').slice(0, 10))}</span></td>
 <td class="mono">${esc(maskKey(k.key_prefix))}</td>
-<td>${Number(u.n).toLocaleString()} req<br><small style="color:var(--muted)">${Number(u.t).toLocaleString()} tok</small></td>
+<td>${Number(u.n).toLocaleString()} req<span class="sub">${Number(u.t).toLocaleString()} tok</span></td>
 <td>${timeAgo(k.last_used_at)}</td>
 <td>${k.status === 'active' ? '<span class="badge ok">Active</span>' : '<span class="badge bad">Revoked</span>'}</td>
 <td>${k.status === 'active'
-  ? `<form method="post" action="/dashboard/api-keys/${k.id}/revoke" style="display:inline" onsubmit="return confirm('Revoke this key? Integrations using it will stop working.')"><input type="hidden" name="_csrf" value="${esc(user.csrf || '')}"><button class="btn danger sm">Revoke</button></form>`
-  : `<form method="post" action="/dashboard/api-keys/${k.id}/delete" style="display:inline" onsubmit="return confirm('Permanently delete this key record?')"><input type="hidden" name="_csrf" value="${esc(user.csrf || '')}"><button class="btn ghost sm">Delete</button></form>`}</td>
+  ? `<form method="post" action="/dashboard/api-keys/${k.id}/revoke" style="display:inline" data-confirm="Revoke this key? Integrations using it will stop working."><input type="hidden" name="_csrf" value="${esc(user.csrf || '')}"><button class="btn danger sm">Revoke</button></form>`
+  : `<form method="post" action="/dashboard/api-keys/${k.id}/delete" style="display:inline" data-confirm="Permanently delete this key record?"><input type="hidden" name="_csrf" value="${esc(user.csrf || '')}"><button class="btn ghost sm">Delete</button></form>`}</td>
 </tr>`;
     }).join('');
     return layout({ title: 'API Keys', user, active: 'API Keys', body: `
 <h1>Manajemen API Keys</h1>
-<p class="sub">Kelola kunci API untuk menghubungkan Cursor, Cline, Open WebUI, dan aplikasi developer.</p>
+<p class="sub">Kelola kunci API untuk menghubungkan Cursor, Cline, Open WebUI, dan aplikasi developer. Secrets are SHA-256 hashed and shown once.</p>
 ${newSecret ? `<div class="alert warn" role="alert"><strong>Copy this key now — it is shown in full only once.</strong> Afterwards only the masked value is visible.</div>
 <div class="secret-box"><code>${esc(newSecret)}</code>
 <button class="btn sm" data-action="copy" data-copy="${esc(newSecret)}" data-label="Copy">Copy</button></div><br>` : ''}
-<div class="row"><div class="spacer"></div>
-<form method="post" action="/dashboard/api-keys" class="row" aria-label="Create API key"><input type="hidden" name="_csrf" value="${esc(user.csrf || '')}"><label class="sr" for="keyname">Key name</label><input id="keyname" type="text" name="name" placeholder="Key name, e.g. Cursor Development" required maxlength="80" style="width:260px"><button class="btn">+ Buat Key Baru</button></form></div><br>
-<table><tr><th>NAMA KUNCI</th><th>API KEY</th><th>USAGE</th><th>TERAKHIR DIPAKAI</th><th>STATUS</th><th>AKSI</th></tr>
-${rows || '<tr><td colspan="6"><div class="empty">Belum ada API key. Buat key pertama untuk mulai memakai gateway.</div></td></tr>'}</table>
-<p><small>Secrets are stored as SHA-256 hashes and can never be recovered after this page. Quotas follow your <a href="/dashboard/billing">plan</a>.</small></p>` });
+<div class="card"><div class="panel-head"><h3>CREATE KEY</h3></div>
+<form method="post" action="/dashboard/api-keys" class="row" aria-label="Create API key"><input type="hidden" name="_csrf" value="${esc(user.csrf || '')}"><label class="sr" for="keyname">Key name</label><input id="keyname" type="text" name="name" placeholder="Key name, e.g. Cursor Development" required maxlength="80" style="max-width:280px;flex:1"><button class="btn">+ Buat Key Baru</button></form></div><br>
+<div class="table-scroll"><table><tr><th>NAMA KUNCI</th><th>API KEY</th><th>USAGE</th><th>TERAKHIR DIPAKAI</th><th>STATUS</th><th>AKSI</th></tr>
+${rows || '<tr><td colspan="6"><div class="empty"><strong>Belum ada API key</strong>Buat key pertama untuk mulai memakai gateway.</div></td></tr>'}</table></div>
+<p><small class="muted">Secrets can never be recovered after this page. Quotas follow your <a href="/dashboard/billing">plan</a>.</small></p>` });
   },
 
   modelsPage(user, models, providers) {
     const provName = Object.fromEntries(providers.map((p) => [p.name, p]));
-    const cards = models.map((m) => {
+    const rows = models.map((m) => {
       const p = provName[m.provider];
       const conn = p ? p.status : 'unknown';
-      return `<div class="card">
-<h3>${esc(m.display_name).toUpperCase()}</h3>
-<div class="stat mono" style="font-size:16px">${esc(m.id)}</div>
-<p><small>Provider: <strong>${esc(m.provider)}</strong> (<span class="badge warn">${esc(conn)}</span>) · Context: <strong>${Number(m.context_window).toLocaleString()} tokens</strong> · Max out: <strong>${Number(m.max_output_tokens).toLocaleString()}</strong> · Status: ${m.enabled ? '<span class="badge ok">Available</span>' : '<span class="badge bad">Disabled</span>'}</small></p>
-<p>${(m.capabilities || []).map((c) => `<span class="badge info">${esc(c)}</span>`).join(' ')}</p>
-<p><small>${esc(m.description || '')}</small></p>
-<p><small>In: $${m.price_input_per_1k}/1K · Out: $${m.price_output_per_1k}/1K${m.fallback ? ` · Fallback: <code class="inline">${esc(m.fallback.model)}</code>` : ''}</small></p></div>`;
+      return `<tr><td><strong>${esc(m.display_name)}</strong><span class="sub mono">${esc(m.id)}${m.fallback ? ` · fallback → ${esc(m.fallback.model)}` : ''}</span><span class="sub">${esc(m.description || '')}</span></td>
+<td class="mono">${esc(m.provider)}<span class="sub">${esc(conn)}</span></td>
+<td>${Number(m.context_window).toLocaleString()}<span class="sub">max out ${Number(m.max_output_tokens).toLocaleString()}</span></td>
+<td>${(m.capabilities || []).map((c) => `<span class="badge info">${esc(c)}</span>`).join(' ')}</td>
+<td><small class="mono">in $${m.price_input_per_1k}/1K<br>out $${m.price_output_per_1k}/1K</small></td>
+<td>${m.enabled ? '<span class="badge ok">Available</span>' : '<span class="badge bad">Disabled</span>'}</td></tr>`;
     }).join('');
     return layout({ title: 'Models', user, active: 'Models', body: `
 <h1>Models</h1><p class="sub">Registry data — public model IDs stay stable even when upstream providers change. Only enabled models accept traffic.</p>
-<div class="grid c2">${cards || '<div class="empty">No models in registry.</div>'}</div>` });
+<div class="table-scroll"><table><tr><th>MODEL</th><th>PROVIDER</th><th>CONTEXT</th><th>CAPABILITIES</th><th>PRICING</th><th>STATUS</th></tr>
+${rows || '<tr><td colspan="6"><div class="empty"><strong>No models in registry.</strong></div></td></tr>'}</table></div>
+<p><small class="muted">Prices are registry values per 1K tokens; metered billing activates with payments. Disabled providers return honest <code class="inline">503 provider_not_connected</code>.</small></p>` });
   },
 
   logs(user, rows) {
@@ -421,60 +552,64 @@ ${rows || '<tr><td colspan="6"><div class="empty">Belum ada API key. Buat key pe
 <td>${r.status === 'success' ? '<span class="badge ok">success</span>' : `<span class="badge bad">${esc(r.error_code || r.status)}</span>`}</td></tr>`).join('');
     return layout({ title: 'Logs', user, active: 'Logs', body: `
 <h1>Logs</h1><p class="sub">Last 100 gateway requests on your account. Columns: timestamp · request id · API key · model · provider · in/out/total tokens · latency · status.</p>
-${tr ? `<table><tr><th>TIMESTAMP</th><th>REQUEST</th><th>API KEY</th><th>MODEL</th><th>PROVIDER</th><th>TOKENS</th><th>LATENCY</th><th>STATUS</th></tr>${tr}</table>`
-  : '<div class="empty">No requests logged yet. Logs will appear here after the API is used — nothing is fabricated.</div>'}` });
+${tr ? `<div class="table-scroll"><table><tr><th>TIMESTAMP</th><th>REQUEST</th><th>API KEY</th><th>MODEL</th><th>PROVIDER</th><th>TOKENS</th><th>LATENCY</th><th>STATUS</th></tr>${tr}</table></div>`
+  : '<div class="empty"><strong>No requests logged yet.</strong>Logs will appear here after the API is used — nothing is fabricated.</div>'}` });
   },
 
   playground(user, models) {
     const opts = models.filter((m) => m.enabled).map((m) => `<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('');
     return layout({ title: 'Playground', user, active: 'Playground', body: `
-<h1>Playground</h1><p class="sub">Developer test console — runs the same gateway pipeline as <code class="inline">/v1</code> using your signed-in session (no API key needed in the browser). <span id="pgmeta"></span></p>
+<h1>Playground</h1><p class="sub">Developer test console — runs the same gateway pipeline as <code class="inline">/v1</code> using your signed-in session (no API key needed in the browser). <span class="pg-meta" id="pgmeta"></span></p>
 <meta name="csrf-token" content="${esc(user.csrf || '')}">
-<div class="chatlog" id="chatlog" aria-live="polite"><div class="msg sys">Pick a model and send a prompt. Responses stream token-by-token when the provider is connected.</div></div><br>
-<form id="pgform" class="grid" style="grid-template-columns:1fr" aria-label="Playground">
-<div class="row"><label class="sr" for="pgmodel">Model</label><select id="pgmodel" name="model" style="max-width:260px">${opts}</select>
-<label for="pgtemp">Temperature</label><input id="pgtemp" type="number" name="temperature" min="0" max="2" step="0.1" value="0.7" style="max-width:90px">
-<label for="pgmax">Max tokens</label><input id="pgmax" type="number" name="max_tokens" min="1" max="32000" value="512" style="max-width:110px">
-<label style="display:inline;font-weight:400"><input type="checkbox" name="stream" checked style="width:auto"> stream</label></div>
-<label class="sr" for="pgsys">System prompt</label><input id="pgsys" type="text" name="system" placeholder="System prompt (optional)">
-<div class="row"><label class="sr" for="pgprompt">Prompt</label><input id="pgprompt" type="text" name="prompt" placeholder="Type a prompt…" required><button class="btn" type="submit">Send</button></div>
-</form>` });
+<form id="pgform" aria-label="Playground"><div class="pg">
+<div class="pg-side">
+<label for="pgmodel">Model</label><select id="pgmodel" name="model">${opts}</select>
+<label for="pgtemp">Temperature <span class="muted" style="font-weight:400">(0–2)</span></label><input id="pgtemp" type="number" name="temperature" min="0" max="2" step="0.1" value="0.7">
+<label for="pgmax">Max tokens</label><input id="pgmax" type="number" name="max_tokens" min="1" max="32000" value="512">
+<label for="pgsys">System prompt <span class="muted" style="font-weight:400">(optional)</span></label><textarea id="pgsys" name="system" rows="2" placeholder="You are concise."></textarea>
+<label style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:14px"><input type="checkbox" name="stream" checked style="width:auto"> Stream tokens (SSE)</label>
+<p class="field-hint">Same validation, rate limits, and router as the API. Usage is logged to your account.</p></div>
+<div class="pg-main">
+<div class="chatlog" id="chatlog" aria-live="polite"><div class="msg sys">Send a prompt below. Responses stream token-by-token when the provider is connected; usage is logged to your account.</div></div>
+<div class="pg-input"><label class="sr" for="pgprompt">Prompt</label><input id="pgprompt" type="text" name="prompt" placeholder="Type a prompt…" required autocomplete="off"><button class="btn" type="submit">Send</button></div>
+</div></div></form>` });
   },
 
   billing(user, sub, plan, plans, usage) {
     const cards = plans.map((p) => {
       const cur = p.name === sub.plan;
-      return `<div class="card"><h3>${esc(p.name.toUpperCase())}${cur ? ' · <span class="badge ok">CURRENT</span>' : ''}</h3>
-<div class="stat" style="font-size:19px">${p.requests_per_day < 0 ? 'Unlimited' : Number(p.requests_per_day).toLocaleString() + '/day'}</div>
-<small>${p.tokens_per_day < 0 ? 'unlimited' : Number(p.tokens_per_day).toLocaleString() + ' tokens/day'} · ${p.rpm < 0 ? 'no rate cap' : p.rpm + '/min'}</small></div>`;
+      return `<div class="plan${cur ? ' hot' : ''}"><h3>${esc(p.name.toUpperCase())}${cur ? ' · CURRENT' : ''}</h3>
+<div class="price">${p.requests_per_day < 0 ? 'Unlimited' : Number(p.requests_per_day).toLocaleString() + '/day'}</div>
+<ul><li>${p.tokens_per_day < 0 ? 'Unlimited tokens' : Number(p.tokens_per_day).toLocaleString() + ' tokens/day'}</li><li>${p.rpm < 0 ? 'no rate cap' : p.rpm + '/min'}</li></ul></div>`;
     }).join('');
     return layout({ title: 'Billing', user, active: 'Plan', body: `
 <h1>Billing</h1><p class="sub">Plan, usage, and limits. Payments are not yet enabled — the schema already tracks plan, quota, usage, and subscription status.</p>
 <div class="grid c2">
-<div class="card"><h3>CURRENT PLAN</h3><div class="stat">${esc(sub.plan)}</div><small>Status: ${esc(sub.status)} · Used today: ${usage.reqs} req / ${Number(usage.toks).toLocaleString()} tokens</small></div>
-<div class="card"><h3>UPGRADE</h3><small>Self-serve upgrades and usage-based invoicing land after Phase 1. Contact us to change plans meanwhile.</small><br><br><a class="btn ghost sm" href="/pricing">Compare plans</a></div>
-</div><br><div class="grid c4">${cards}</div>` });
+<div class="card"><h3>CURRENT PLAN</h3><div class="stat" style="font-size:26px;font-weight:750">${esc(sub.plan)}</div><small class="muted">Status: ${esc(sub.status)} · Used today: ${usage.reqs} req / ${Number(usage.toks).toLocaleString()} tokens</small></div>
+<div class="card"><h3>UPGRADE</h3><p class="muted" style="font-size:14px">Self-serve upgrades and usage-based invoicing land after Phase 1. Contact us to change plans meanwhile.</p><p style="margin:0"><a class="btn ghost sm" href="/pricing">Compare plans</a></p></div>
+</div><br><div class="plans">${cards}</div>` });
   },
 
   usagePage(user, s) {
+    const stat = (l, v, sub) => `<div class="stat-cell"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${sub || ''}</div></div>`;
     const rows = (s.daily || []).map((r) =>
       `<tr><td class="mono">${esc(r.d)}</td><td>${r.n}</td><td>${Number(r.t).toLocaleString()}</td></tr>`).join('');
     const byModel = (s.byModel || []).map((r) =>
       `<tr><td class="mono">${esc(r.model_id)}</td><td>${r.n}</td><td>${Number(r.i).toLocaleString()}</td><td>${Number(r.o).toLocaleString()}</td><td>${Number(r.t).toLocaleString()}</td></tr>`).join('');
     const byKey = (s.byKey || []).map((r) =>
       `<tr><td><strong>${esc(r.name)}</strong> <small class="mono">${esc(maskKey(r.key_prefix))}</small></td><td>${r.n}</td><td>${Number(r.t).toLocaleString()}</td></tr>`).join('');
-    const empty = '<div class="empty">No data yet — metrics populate automatically once the gateway is used.</div>';
+    const empty = '<div class="empty"><strong>No data yet</strong>Metrics populate automatically once the gateway is used.</div>';
     return layout({ title: 'Usage', user, active: 'Usage', body: `
-<h1>Usage</h1><p class="sub">Requests, tokens, cost estimate, and breakdowns on your account.</p>
-<div class="grid c4">
-<div class="card"><h3>REQUESTS</h3><div class="stat">${s.total}</div><small>${s.month} this month</small></div>
-<div class="card"><h3>INPUT TOKENS</h3><div class="stat">${Number(s.inTok).toLocaleString()}</div></div>
-<div class="card"><h3>OUTPUT TOKENS</h3><div class="stat">${Number(s.outTok).toLocaleString()}</div></div>
-<div class="card"><h3>EST. COST</h3><div class="stat">$0.00</div><small>metered pricing activates with billing</small></div>
-</div><br>
-<div class="card"><h3>USAGE BY MODEL</h3>${byModel ? `<table><tr><th>MODEL</th><th>REQUESTS</th><th>IN</th><th>OUT</th><th>TOTAL</th></tr>${byModel}</table>` : empty}</div><br>
-<div class="card"><h3>USAGE BY API KEY</h3>${byKey ? `<table><tr><th>KEY</th><th>REQUESTS</th><th>TOKENS</th></tr>${byKey}</table>` : empty}</div><br>
-<div class="card"><h3>DAILY (14 DAYS)</h3>${rows ? `<table><tr><th>DATE</th><th>REQUESTS</th><th>TOKENS</th></tr>${rows}</table>` : empty}</div>` });
+<h1>Usage</h1><p class="sub">Requests, tokens, cost estimate, and breakdowns on your account. Nothing here is fabricated.</p>
+<div class="stats">
+${stat('REQUESTS', s.total, s.month + ' this month')}
+${stat('INPUT TOKENS', Number(s.inTok).toLocaleString(), '')}
+${stat('OUTPUT TOKENS', Number(s.outTok).toLocaleString(), '')}
+${stat('EST. COST', '$0.00', 'metered pricing activates with billing')}
+</div>
+<div class="card"><div class="panel-head"><h3>USAGE BY MODEL</h3></div>${byModel ? `<div class="table-scroll"><table><tr><th>MODEL</th><th>REQUESTS</th><th>IN</th><th>OUT</th><th>TOTAL</th></tr>${byModel}</table></div>` : empty}</div><br>
+<div class="card"><div class="panel-head"><h3>USAGE BY API KEY</h3></div>${byKey ? `<div class="table-scroll"><table><tr><th>KEY</th><th>REQUESTS</th><th>TOKENS</th></tr>${byKey}</table></div>` : empty}</div><br>
+<div class="card"><div class="panel-head"><h3>DAILY (14 DAYS)</h3></div>${rows ? `<div class="table-scroll"><table><tr><th>DATE</th><th>REQUESTS</th><th>TOKENS</th></tr>${rows}</table></div>` : empty}</div>` });
   },
 
   settings(user, msg, error) {
@@ -488,19 +623,21 @@ ${error ? `<div class="alert bad" role="alert">${esc(error)}</div>` : ''}
 <input type="hidden" name="_csrf" value="${esc(user.csrf || '')}">
 <label for="setname">Display name</label><input id="setname" type="text" name="name" maxlength="80" value="${esc(user.name || '')}" placeholder="Your name">
 <label>Email</label><input type="email" value="${esc(user.email)}" disabled>
+<p class="field-hint">Email identifies your account and cannot be changed here.</p>
 <p><button class="btn" type="submit">Save profile</button></p></form></div>
 <div class="card"><h3>SECURITY</h3>
 <form method="post" action="/dashboard/settings/password" class="form-narrow">
 <input type="hidden" name="_csrf" value="${esc(user.csrf || '')}">
 <label for="setpass">New password (min 8 chars)</label><input id="setpass" type="password" name="password" minlength="8" required autocomplete="new-password">
 <p><button class="btn" type="submit">Update password</button></p></form>
-<p><small>Sessions expire after 7 days. Passwords are bcrypt-hashed; API keys are SHA-256 hashed.</small></p></div>
+<p><small class="muted">Sessions expire after 7 days. Passwords are bcrypt-hashed; API keys are SHA-256 hashed.</small></p></div>
 </div>` });
   },
 
   sdk() {
     return layout({ title: 'SDK', user: null, active: 'SDK', dash: false, body: `
-<h1>SDK</h1><p class="sub">CiptaModel speaks the OpenAI API — every OpenAI SDK works. Just point the base URL at us.</p>
+<div class="docpage-head"><p class="kicker">SDK</p><h1>Any OpenAI SDK works.</h1>
+<p class="sub" style="margin:0">CiptaModel speaks the OpenAI API — point the base URL at us and keep your code.</p></div>
 <h2>Python</h2><pre>from openai import OpenAI
 
 client = OpenAI(
@@ -526,7 +663,8 @@ const r = await client.chat.completions.create({
 
   examples() {
     return layout({ title: 'Examples', user: null, active: 'Examples', dash: false, body: `
-<h1>Examples</h1><p class="sub">Copy-paste recipes for common clients.</p>
+<div class="docpage-head"><p class="kicker">EXAMPLES</p><h1>Copy-paste recipes.</h1>
+<p class="sub" style="margin:0">cURL, streaming, and model listing against the live gateway.</p></div>
 <h2>cURL — chat completion</h2><pre>curl ${esc(config.publicApiBaseUrl)}/chat/completions \\
   -H "Authorization: Bearer $CIPTAMODEL_API_KEY" \\
   -H "Content-Type: application/json" \\
@@ -539,7 +677,28 @@ const r = await client.chat.completions.create({
 <h2>cURL — list models</h2><pre>curl ${esc(config.publicApiBaseUrl)}/models \\
   -H "Authorization: Bearer $CIPTAMODEL_API_KEY"</pre>` });
   },
+
+  publicModels(models, providers) {
+    const provName = Object.fromEntries((providers || []).map((pr) => [pr.name, pr]));
+    const rows = (models || []).map((m) => {
+      return `<tr><td><strong>${esc(m.display_name)}</strong><span class="sub mono">${esc(m.id)}</span><span class="sub">${esc(m.description || '')}</span></td>
+<td class="mono">${esc(m.provider)}</td>
+<td style="white-space:nowrap">${Number(m.context_window).toLocaleString()}<span class="sub">max out ${Number(m.max_output_tokens).toLocaleString()}</span></td>
+<td>${(m.capabilities || []).map((c) => `<span class="badge info">${esc(c)}</span>`).join(' ')}</td>
+<td>${m.enabled ? '<span class="badge ok">Available</span>' : '<span class="badge bad">Disabled</span>'}</td></tr>`;
+    }).join('');
+    return publicShell({ title: 'Models', body: `
+<div class="wrap section"><div class="section-head"><p class="kicker">MODEL REGISTRY</p><h2>Models on the gateway.</h2>
+<p>Public IDs stay stable even when upstream providers change. Only enabled models accept traffic. <a href="/register">Get a key →</a></p></div>
+<div class="table-scroll"><table><tr><th>MODEL</th><th>PROVIDER</th><th>CONTEXT</th><th>CAPABILITIES</th><th>STATUS</th></tr>
+${rows || '<tr><td colspan="5">No models in registry.</td></tr>'}</table></div>
+<p><small class="muted">Full pricing, fallbacks, and per-key usage live in the <a href="/dashboard">dashboard</a> after sign-in.</small></p></div>` });
+  },
 };
+
+function listModelsSafe() {
+  try { return listModels({ enabledOnly: false }); } catch { return []; }
+}
 
 // Static docs (intended API contract; Phase-2 endpoints are badged, not claimed live)
 const DOCS = {
@@ -632,14 +791,16 @@ function docsPage(slug) {
   const items = Object.entries(DOCS).map(([k, v]) =>
     `<a href="/docs/${k}" class="${k === slug ? 'active' : ''}">${v.title}${v.phase2 ? ' ⏳' : ''}</a>`).join('');
   return layout({ title: d.title, user: null, active: 'Documentation', dash: false, body: `
-<h1>${esc(d.title)}${d.phase2 ? phase2Badge() : ''}</h1><div class="docs"><nav aria-label="Documentation sections">${items}</nav><div class="doc-body">${d.body}</div></div>` });
+<div class="docpage-head"><p class="kicker">DOCS</p><h1>${esc(d.title)}${d.phase2 ? phase2Badge() : ''}</h1></div>
+<button class="btn ghost sm docsnav-btn" data-action="docsnav" aria-expanded="false" style="margin-bottom:12px">Sections</button>
+<div class="docs"><nav aria-label="Documentation sections" id="docsnav">${items}</nav><div class="doc-body">${d.body}</div></div>` });
 }
 
 // ============================================================
 // Routes — public
 // ============================================================
-app.get('/', async () => views.landing());
-app.get('/pricing', async () => views.pricing(getDb().prepare('SELECT * FROM plans ORDER BY requests_per_day').all()));
+app.get('/', async () => views.landing(listProviders(), orderedPlans()));
+app.get('/pricing', async () => views.pricing(orderedPlans()));
 
 // Health: app liveness + per-provider status WITHOUT secrets. Provider
 // detail endpoint is admin/session-authenticated; health shows names only.
@@ -774,8 +935,8 @@ app.get('/dashboard/models', async (req, reply) => {
 });
 app.get('/models', async (req, reply) => {
   const user = await currentUser(req);
-  if (!user) return reply.redirect('/login');
-  return views.modelsPage(user, listModels({ enabledOnly: false }), listProviders());
+  if (user) return views.modelsPage(user, listModels({ enabledOnly: false }), listProviders());
+  return views.publicModels(listModels({ enabledOnly: false }), listProviders());
 });
 app.get('/dashboard/logs', async (req, reply) => {
   const user = await requireUser(req, reply);
@@ -817,7 +978,7 @@ app.get('/dashboard/billing', async (req, reply) => {
   const user = await requireUser(req, reply);
   if (!user) return;
   const sub = ensureSubscription(user.id, user.plan);
-  const plans = getDb().prepare('SELECT * FROM plans ORDER BY requests_per_day').all();
+  const plans = orderedPlans();
   const usage = {
     reqs: getDb().prepare('SELECT COUNT(*) c FROM requests WHERE user_id=? AND created_at>=?').get(user.id, dayStartIso()).c,
     toks: getDb().prepare('SELECT COALESCE(SUM(total_tokens),0) t FROM requests WHERE user_id=? AND created_at>=?').get(user.id, dayStartIso()).t,
@@ -870,7 +1031,7 @@ app.get('/examples', async () => views.examples());
 app.get('/docs', async (req, reply) => reply.redirect('/docs/introduction'));
 app.get('/docs/:slug', async (req, reply) => {
   const page = docsPage(req.params.slug);
-  if (!page) return reply.code(404).type('text/html').send('<h1>404</h1><p>Doc not found. <a href="/docs">All docs</a></p>');
+  if (!page) return reply.code(404).type('text/html').send(errPage(404, 'Doc not found', 'That documentation page does not exist. Start from the introduction.'));
   return page;
 });
 app.get('/docs.json', async () => ({
@@ -1204,7 +1365,7 @@ app.post('/v1/chat/completions', async (req, reply) => {
 app.setNotFoundHandler(async (req, reply) => {
   if (req.url.startsWith('/v1/')) return sendErr(reply, 404, 'Unknown endpoint. See /docs.', 'not_found', 'not_found');
   if (req.url.startsWith('/api/')) return sendErr(reply, 404, 'Unknown endpoint.', 'not_found', 'not_found');
-  return reply.code(404).type('text/html').send('<h1>404</h1><p><a href="/">CiptaModel home</a></p>');
+  return reply.code(404).type('text/html').send(errPage(404, 'Page not found', 'The page you requested does not exist.'));
 });
 app.setErrorHandler(async (err, req, reply) => {
   logEvent({ level: 'error', msg: 'unhandled', route: req.url });
@@ -1221,7 +1382,7 @@ app.setErrorHandler(async (err, req, reply) => {
       status, message, type: status === 500 ? 'server_error' : 'invalid_request_error', code,
     });
   }
-  return reply.code(500).type('text/html').send('<h1>500</h1><p>Something went wrong.</p>');
+  return reply.code(500).type('text/html').send(errPage(500, 'Something went wrong', 'An unexpected error occurred. Please retry — every gateway reply carries an X-Request-ID for support.'));
 });
 
 // ---------- boot ----------

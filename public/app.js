@@ -1,10 +1,22 @@
 'use strict';
-// Minimal progressive enhancement: sidebar toggle, copy buttons, playground.
+// Progressive enhancement: nav toggles, copy buttons, confirm dialogs, playground.
 document.addEventListener('click', async (e) => {
   const t = e.target.closest('[data-action]');
   if (!t) return;
   const action = t.dataset.action;
   if (action === 'menu') document.querySelector('.sidebar')?.classList.toggle('open');
+  if (action === 'pubmenu') {
+    const nav = document.getElementById('pubnav');
+    const open = nav?.classList.toggle('open');
+    t.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  if (action === 'docsnav') {
+    const n = document.getElementById('docsnav');
+    if (!n) return;
+    const hidden = n.style.display === 'none';
+    n.style.display = hidden ? '' : 'none';
+    t.setAttribute('aria-expanded', hidden ? 'true' : 'false');
+  }
   if (action === 'copy') {
     const text = t.dataset.copy || '';
     try { await navigator.clipboard.writeText(text); t.textContent = 'Copied'; }
@@ -12,6 +24,26 @@ document.addEventListener('click', async (e) => {
     setTimeout(() => { t.textContent = t.dataset.label || 'Copy'; }, 1500);
   }
 });
+
+// Confirm dialogs (delegated — keeps CSP script-src 'self' intact, no inline handlers).
+document.addEventListener('submit', (e) => {
+  const f = e.target.closest('form[data-confirm]');
+  if (f && !window.confirm(f.dataset.confirm)) e.preventDefault();
+});
+
+// Add copy buttons to docs/SDK/example code blocks (only when a copy source exists).
+for (const pre of document.querySelectorAll('pre')) {
+  if (pre.querySelector('.copybtn') || pre.closest('.term')) continue;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'copybtn';
+  btn.textContent = 'Copy';
+  btn.dataset.action = 'copy';
+  btn.dataset.label = 'Copy';
+  btn.dataset.copy = pre.textContent;
+  btn.setAttribute('aria-label', 'Copy code block');
+  pre.appendChild(btn);
+}
 
 async function playgroundSend(ev) {
   ev.preventDefault();

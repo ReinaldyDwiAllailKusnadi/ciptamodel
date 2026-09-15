@@ -504,7 +504,7 @@ describe('platform', () => {
     const docIdx = await app.inject({ method: 'GET', url: '/docs.json' });
     const pages = docIdx.json().pages;
     const bySlug = Object.fromEntries(pages.map((p) => [p.slug, p]));
-    for (const s of ['introduction', 'quickstart', 'authentication', 'models', 'chat-completions', 'streaming', 'api-keys', 'errors', 'rate-limits', 'usage', 'sdk', 'examples']) {
+    for (const s of ['introduction', 'quickstart', 'authentication', 'models', 'chat-completions', 'streaming', 'api-keys', 'errors', 'rate-limits', 'usage', 'sdk', 'examples', 'cursor', 'cline', 'open-webui']) {
       assert.ok(bySlug[s], `docs missing ${s}`);
       const p = await app.inject({ method: 'GET', url: `/docs/${s}` });
       assert.equal(p.statusCode, 200, s);

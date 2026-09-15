@@ -604,9 +604,25 @@ const DOCS = {
 <p>Every gateway call records model, provider, input/output tokens, latency, status, and error code. Inspect yours at <a href="/dashboard/usage">Dashboard → Usage</a> and <a href="/dashboard/logs">Logs</a>.</p>` },
   sdk: { title: 'SDK', phase2: false, body: `<p>Use any OpenAI SDK with <code class="inline">baseURL ${esc(config.publicApiBaseUrl)}</code>. See the <a href="/sdk">SDK page</a> for Python/JS snippets. The gateway is OpenAI-compatible: Bearer auth, <code class="inline">/v1/models</code>, <code class="inline">/v1/chat/completions</code>, SSE streaming, and standard error shapes all work with unmodified clients (Cursor, Cline, Open WebUI).</p>` },
   examples: { title: 'Examples', phase2: false, body: `<p>Copy-paste recipes live on the <a href="/examples">Examples page</a> (cURL, streaming, list models).</p>
-<p><strong>Cursor:</strong> Settings → Models → OpenAI API Key = your <code class="inline">sk-cm-live-…</code>, Override OpenAI Base URL = <code class="inline">${esc(config.publicApiBaseUrl)}</code>, custom model <code class="inline">deepseek-v4.1-flash</code>.</p>
-<p><strong>Cline / Roo Code:</strong> provider OpenAI Compatible, same base URL + key + model.</p>
-<p><strong>Open WebUI:</strong> Settings → Connections → OpenAI, same base URL + key, then refresh models.</p>` },
+<p><strong>Cursor:</strong> see <a href="/docs/cursor">Cursor setup</a>. <strong>Cline / Roo Code:</strong> see <a href="/docs/cline">Cline setup</a>. <strong>Open WebUI:</strong> see <a href="/docs/open-webui">Open WebUI setup</a>.</p>` },
+  cursor: { title: 'Cursor', phase2: false, body: `
+<p>Use CiptaModel as a drop-in OpenAI-compatible provider in Cursor.</p>
+<ol><li>Open <strong>Cursor Settings → Models → OpenAI API Key</strong> and paste your key: <code class="inline">sk-cm-live-...</code> (create one at <a href="/dashboard/api-keys">Dashboard → API Keys</a>).</li>
+<li>Set <strong>Override OpenAI Base URL</strong> to <code class="inline">${esc(config.publicApiBaseUrl)}</code>.</li>
+<li>Add custom model <code class="inline">deepseek-v4.1-flash</code>.</li></ol>
+<p>Verify with <code class="inline">GET /v1/models</code> using the same key — the model list your client sees comes straight from the registry.</p>` },
+  cline: { title: 'Cline / Roo Code', phase2: false, body: `
+<p>Use CiptaModel from Cline or Roo Code via the OpenAI-Compatible provider type.</p>
+<ol><li>Open the provider settings, choose <strong>OpenAI Compatible</strong>.</li>
+<li>Base URL: <code class="inline">${esc(config.publicApiBaseUrl)}</code></li>
+<li>API key: <code class="inline">sk-cm-live-...</code></li>
+<li>Model: <code class="inline">deepseek-v4.1-flash</code></li></ol>
+<p>Streaming (<code class="inline">stream: true</code>) is supported, so completions arrive token-by-token as these tools expect.</p>` },
+  'open-webui': { title: 'Open WebUI', phase2: false, body: `
+<p>Connect Open WebUI to CiptaModel as an OpenAI endpoint.</p>
+<ol><li>Go to <strong>Settings → Connections → OpenAI</strong>.</li>
+<li>Set base URL to <code class="inline">${esc(config.publicApiBaseUrl)}</code> and paste your <code class="inline">sk-cm-live-...</code> key.</li>
+<li>Refresh models — <code class="inline">deepseek-v4.1-flash</code> appears automatically via <code class="inline">GET /v1/models</code>.</li></ol>` },
 };
 
 function docsPage(slug) {

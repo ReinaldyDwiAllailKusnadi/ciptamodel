@@ -1225,7 +1225,7 @@ app.setErrorHandler(async (err, req, reply) => {
 // ---------- boot ----------
 async function start() {
   connect();
-  await app.listen({ port: config.port, host: '0.0.0.0' });
+  await app.listen({ port: config.port, host: config.host });
   console.log(`CiptaModel listening on ${config.baseUrl} — gateway at ${config.baseUrl}/v1`);
 }
 

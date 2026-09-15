@@ -11,6 +11,9 @@ function env(name, fallback = '') {
 
 const config = {
   port: parseInt(env('PORT', '3000'), 10),
+  // Bind loopback by default (reverse proxy lives on the same host).
+  // Override with HOST=0.0.0.0 for Docker-bridged or multi-host setups.
+  host: env('HOST', '127.0.0.1'),
   baseUrl: env('BASE_URL', 'http://localhost:3000'),
   publicApiBaseUrl: env('PUBLIC_API_BASE_URL', 'https://ciptamodel.com/v1'),
   dbPath: env('DATABASE_PATH', './data/ciptamodel.db'),

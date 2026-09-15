@@ -98,3 +98,4 @@ function meta(ms, usage) {
     : `latency ${ms} ms (streamed)`;
 }
 window.playgroundSend = playgroundSend;
+document.getElementById('pgform')?.addEventListener('submit', playgroundSend);

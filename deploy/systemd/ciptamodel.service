@@ -1,0 +1,34 @@
+# STAGED systemd unit for CiptaModel — copy to /etc/systemd/system/ciptamodel.service
+# after code is deployed to /opt/ciptamodel (adjust paths/user to the server).
+# Then: systemctl daemon-reload && systemctl enable --now ciptamodel
+#
+# Security notes:
+#  - Secrets come ONLY from EnvironmentFile (/opt/ciptamodel/.env, mode 0600).
+#  - The unit never prints the environment (no ExecStart echo of variables).
+#  - No interactive shell required; restart is automatic on failure.
+
+[Unit]
+Description=CiptaModel Unified AI API Gateway
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust to the deploy user and path on the server:
+User=www-data
+WorkingDirectory=/opt/ciptamodel
+Environment=NODE_ENV=production
+EnvironmentFile=-/opt/ciptamodel/.env
+ExecStart=/usr/bin/node /opt/ciptamodel/src/server.js
+Restart=on-failure
+RestartSec=5
+# Hardening (no secrets involved):
+NoNewPrivileges=true
+PrivateTmp=true
+# Logs go to the journal — never include credentials in log lines (see src/server.js logEvent).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ciptamodel
+
+[Install]
+WantedBy=multi-user.target

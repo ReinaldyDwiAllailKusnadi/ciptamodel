@@ -106,7 +106,8 @@ function createSession(userId, reply) {
   const expires = new Date(Date.now() + 7 * 86400e3).toISOString();
   getDb().prepare('INSERT INTO sessions (token_hash, user_id, expires_at, csrf_token) VALUES (?,?,?,?)')
     .run(hashSecret(token), userId, expires, csrf);
-  reply.setCookie('cm_session', token, { path: '/', httpOnly: true, sameSite: 'lax', maxAge: 7 * 86400 });
+  const secure = process.env.NODE_ENV === 'production';
+  reply.setCookie('cm_session', token, { path: '/', httpOnly: true, sameSite: 'lax', secure, maxAge: 7 * 86400 });
 }
 
 function destroySession(req, reply) {
@@ -430,7 +431,7 @@ ${tr ? `<table><tr><th>TIMESTAMP</th><th>REQUEST</th><th>API KEY</th><th>MODEL</
 <h1>Playground</h1><p class="sub">Developer test console — runs the same gateway pipeline as <code class="inline">/v1</code> using your signed-in session (no API key needed in the browser). <span id="pgmeta"></span></p>
 <meta name="csrf-token" content="${esc(user.csrf || '')}">
 <div class="chatlog" id="chatlog" aria-live="polite"><div class="msg sys">Pick a model and send a prompt. Responses stream token-by-token when the provider is connected.</div></div><br>
-<form onsubmit="playgroundSend(event)" class="grid" style="grid-template-columns:1fr" aria-label="Playground">
+<form id="pgform" class="grid" style="grid-template-columns:1fr" aria-label="Playground">
 <div class="row"><label class="sr" for="pgmodel">Model</label><select id="pgmodel" name="model" style="max-width:260px">${opts}</select>
 <label for="pgtemp">Temperature</label><input id="pgtemp" type="number" name="temperature" min="0" max="2" step="0.1" value="0.7" style="max-width:90px">
 <label for="pgmax">Max tokens</label><input id="pgmax" type="number" name="max_tokens" min="1" max="32000" value="512" style="max-width:110px">
@@ -746,7 +747,8 @@ app.post('/dashboard/api-keys', async (req, reply) => {
     .run(id, user.id, name, hash, prefix);
   audit({ userId: user.id, action: 'api_key.create', targetType: 'api_key', targetId: id, ip: req.ip });
   logEvent({ level: 'info', msg: 'api key created' });
-  reply.setCookie('cm_newkey', Buffer.from(secret).toString('base64url'), { path: '/', httpOnly: true, maxAge: 120 });
+  const secure = process.env.NODE_ENV === 'production';
+  reply.setCookie('cm_newkey', Buffer.from(secret).toString('base64url'), { path: '/', httpOnly: true, sameSite: 'lax', secure, maxAge: 120 });
   return reply.redirect('/dashboard/api-keys');
 });
 app.post('/dashboard/api-keys/:id/revoke', async (req, reply) => {

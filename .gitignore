@@ -1,5 +1,31 @@
+# dependencies
 node_modules/
+
+# runtime data + databases
 data/
-.env
 *.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+
+# environment / secrets
+.env
+.env.*
+
+# keys / certs
+*.pem
+*.key
+
+# logs
 *.log
+logs/
+
+# test coverage
+coverage/
+
+# temp / backup
+tmp/
+*.bak
+*.backup
+*~

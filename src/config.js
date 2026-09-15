@@ -17,6 +17,26 @@ const config = {
   sessionSecret: env('SESSION_SECRET', 'dev-only-secret-change-me-32-chars-min'),
   redisUrl: env('REDIS_URL', ''), // empty => in-memory limiter (see limits.js)
 
+  // Upstream provider credentials — server-side only. Never exposed to
+  // frontend, logs, errors, or DB. Empty apiKey => adapter stays
+  // `not connected` and the app still boots (honest 503 on chat).
+  deepseek: {
+    apiKey: env('DEEPSEEK_API_KEY', ''),
+    baseUrl: env('DEEPSEEK_BASE_URL', 'https://api.deepseek.com').replace(/\/$/, ''),
+    timeoutMs: parseInt(env('DEEPSEEK_TIMEOUT_MS', '60000'), 10),
+  },
+
+  // Gateway request validation + resilience tuning (all server-side).
+  gateway: {
+    bodyLimitBytes: parseInt(env('GATEWAY_BODY_LIMIT_BYTES', String(1024 * 1024)), 10),
+    maxMessages: 100,
+    maxContentChars: 100000,
+    maxTotalChars: 500000,
+    retryMaxAttempts: 2, // 1 initial + 1 retry on transient failures (non-stream only)
+    retryBaseDelayMs: 300,
+    streamStallTimeoutMs: parseInt(env('GATEWAY_STREAM_STALL_MS', '60000'), 10),
+  },
+
   // Default plan quotas. Admins can change these at runtime via the
   // `plans` table without touching code.
   defaultPlans: {

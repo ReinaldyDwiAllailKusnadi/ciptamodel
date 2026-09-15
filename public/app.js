@@ -52,8 +52,9 @@ async function playgroundSend(ev) {
     }
     if (!stream) {
       const data = await res.json();
-      ai.textContent = data.content || '(empty response)';
-      meta(((performance.now() - t0) | 0), data.usage);
+      ai.textContent = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '(empty response)';
+      const u = data.usage || null;
+      meta(((performance.now() - t0) | 0), u ? { input_tokens: u.prompt_tokens, output_tokens: u.completion_tokens } : null);
     } else {
       ai.textContent = '';
       const reader = res.body.getReader();
@@ -71,7 +72,9 @@ async function playgroundSend(ev) {
           const payload = line.slice(5).trim();
           if (payload === '[DONE]') continue;
           try {
-            const d = JSON.parse(payload).choices?.[0]?.delta?.content || '';
+            const evt = JSON.parse(payload);
+            if (evt.error) { ai.textContent = 'Error: ' + (evt.error.message || evt.error.code || 'provider error'); return; }
+            const d = (evt.choices && evt.choices[0] && evt.choices[0].delta && evt.choices[0].delta.content) || '';
             ai.textContent += d;
             log.scrollTop = log.scrollHeight;
           } catch { /* skip */ }
@@ -90,7 +93,7 @@ async function playgroundSend(ev) {
 function meta(ms, usage) {
   const el = document.getElementById('pgmeta');
   if (!el) return;
-  el.textContent = usage
+  el.textContent = usage && usage.input_tokens !== undefined
     ? `latency ${ms} ms · ${usage.input_tokens} in / ${usage.output_tokens} out`
     : `latency ${ms} ms (streamed)`;
 }

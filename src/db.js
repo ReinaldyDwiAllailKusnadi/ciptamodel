@@ -125,11 +125,28 @@ function migrate(db) {
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     );
     CREATE INDEX IF NOT EXISTS idx_audit_user_created ON audit_logs(user_id, created_at);
+    -- Phase 2: per-client-request tracing + cost. Nullable so Phase-1 rows stay valid.
+    -- provider_attempts distinguishes the client request from upstream attempts
+    -- (retries / fallbacks) for later billing.
+    CREATE TABLE IF NOT EXISTS provider_attempts (
+      id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'success',
+      error_code TEXT,
+      latency_ms INTEGER NOT NULL DEFAULT 0,
+      attempt_no INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_attempts_request ON provider_attempts(request_id);
   `);
   // Additive migrations for databases created before these columns existed.
   for (const sql of [
     `ALTER TABLE sessions ADD COLUMN csrf_token TEXT`,
     `ALTER TABLE users ADD COLUMN name TEXT`,
+    `ALTER TABLE requests ADD COLUMN request_id TEXT`,
+    `ALTER TABLE requests ADD COLUMN est_cost REAL`,
   ]) {
     try { db.exec(sql); } catch { /* already migrated */ }
   }

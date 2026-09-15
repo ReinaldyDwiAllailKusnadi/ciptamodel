@@ -18,8 +18,14 @@ const fastify = require('fastify');
 const config = require('./config');
 const dbm = require('./db');
 const { connect, getDb, uid, generateApiKey, hashSecret, maskKey, listModels, listProviders, audit } = dbm;
-const { buildRouter } = require('./providers');
+const { buildRouter, newRequestId, sanitizeRequestId, ProviderError, ProviderNotConnectedError } = require('./providers');
 const { createMemoryBackend, checkRate, checkQuota } = require('./limits');
+
+// Test hook: gateway tests inject deterministic mock adapters via
+// setRouterOverrides({ adapters: { deepseek: mock } }). Production never sets this.
+let routerOverrides = null;
+function setRouterOverrides(o) { routerOverrides = o; }
+function getRouter() { return buildRouter(dbm, config, routerOverrides || {}); }
 
 // Load .env if present (no dotenv dependency — tiny inline loader).
 (function loadEnv() {
@@ -31,7 +37,7 @@ const { createMemoryBackend, checkRate, checkQuota } = require('./limits');
   }
 })();
 
-const app = fastify({ logger: false, trustProxy: true });
+const app = fastify({ logger: false, trustProxy: true, bodyLimit: config.gateway.bodyLimitBytes });
 app.register(require('@fastify/cookie'), { secret: config.sessionSecret });
 app.register(require('@fastify/formbody'));
 
@@ -152,15 +158,36 @@ function ensureSubscription(userId, plan) {
   return db.prepare('SELECT * FROM subscriptions WHERE user_id = ?').get(userId);
 }
 
-function logUsage({ userId, keyId, modelId, provider, inputTokens, outputTokens, latencyMs, status, errorCode }) {
+function logUsage({ requestId = null, userId, keyId, modelId, provider, inputTokens, outputTokens, latencyMs, status, errorCode, estCost = null }) {
   try {
     getDb().prepare(`INSERT INTO requests
-      (id, user_id, api_key_id, model_id, provider, input_tokens, output_tokens, total_tokens, latency_ms, status, error_code)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
-      uid('req'), userId, keyId, modelId, provider,
+      (id, request_id, user_id, api_key_id, model_id, provider, input_tokens, output_tokens, total_tokens, latency_ms, status, error_code, est_cost)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      uid('req'), requestId, userId, keyId, modelId, provider,
       inputTokens || 0, outputTokens || 0, (inputTokens || 0) + (outputTokens || 0),
-      latencyMs || 0, status, errorCode || null);
+      latencyMs || 0, status, errorCode || null, estCost);
   } catch { logEvent({ level: 'error', msg: 'usage log failed' }); }
+}
+
+function logAttempt({ requestId, provider, model, status, errorCode, latencyMs, attemptNo }) {
+  try {
+    getDb().prepare(`INSERT INTO provider_attempts (id, request_id, provider, model, status, error_code, latency_ms, attempt_no)
+      VALUES (?,?,?,?,?,?,?,?)`).run(uid('att'), requestId, provider, model, status, errorCode || null, latencyMs || 0, attemptNo || 1);
+  } catch { /* attempts must never break the request */ }
+}
+
+// Cost from the model registry pricing fields. Null when unknown —
+// never $0.00 for a priced-unknown model.
+function estimateCost(entry, inputTokens, outputTokens) {
+  if (entry == null || inputTokens == null || outputTokens == null) return null;
+  const ip = Number(entry.price_input_per_1k);
+  const op = Number(entry.price_output_per_1k);
+  if (!Number.isFinite(ip) || !Number.isFinite(op)) return null;
+  if (ip === 0 && op === 0) {
+    // Registry explicitly prices this model at zero.
+    return 0;
+  }
+  return (inputTokens / 1000) * ip + (outputTokens / 1000) * op;
 }
 
 function userStats(userId) {
@@ -254,7 +281,7 @@ const views = {
   -H "Content-Type: application/json" \\
   -d '{"model": "deepseek-v4.1-flash",
        "messages": [{"role": "user", "content": "Hello"}]}'</pre>
-<p><small>Full endpoint activates in Phase 2 — the contract above is final.</small></p>
+<p><small>Live gateway — point any OpenAI-compatible client at the base URL above.</small></p>
 </div>
 <h2 style="text-align:center">How it works</h2>
 <div class="feat">
@@ -275,7 +302,7 @@ const views = {
 <div class="card"><h3>PRO / ENTERPRISE</h3><div class="stat" style="font-size:19px">Soon</div><small>High volume, custom quotas, priority support. <a href="/pricing">Details →</a></small></div>
 </div>
 <h2 style="text-align:center">FAQ</h2>
-<div class="card"><h3>IS THE API LIVE?</h3><small>The platform foundation (console, keys, registry, docs) is live. AI inference activates in Phase 2 — the <code class="inline">/v1</code> contract documented here is final.</small></div><br>
+<div class="card"><h3>IS THE API LIVE?</h3><small>Yes — <code class="inline">POST /v1/chat/completions</code> serves real DeepSeek inference through the gateway (Bearer key required). Without server-side provider credentials it returns an honest <code class="inline">503 provider_not_connected</code>.</small></div><br>
 <div class="card"><h3>WHICH CLIENTS ARE SUPPORTED?</h3><small>Anything speaking OpenAI-compatible HTTP: Cursor, Cline, Roo Code, Claude Code, Aider, Open WebUI, and the official OpenAI SDKs.</small></div><br>
 <div class="card"><h3>CAN I CHANGE PROVIDERS LATER?</h3><small>Yes — that is the point. Your client talks to CiptaModel; the router picks the provider. Model IDs stay stable.</small></div><br>
 <p style="text-align:center"><a class="btn" href="/register">Create your free account</a></p>
@@ -317,7 +344,7 @@ ${error ? `<div class="alert bad" role="alert">${esc(error)}</div>` : ''}
     const provRows = providers.map((p) =>
       `<tr><td><strong>${esc(p.display_name)}</strong></td><td class="mono">${esc(p.name)}</td>
        <td>${p.enabled ? '<span class="badge info">Enabled</span>' : '<span class="badge">Disabled</span>'}</td>
-       <td><span class="badge warn">${esc(p.status)}</span></td></tr>`).join('');
+       <td><span class="badge ${p.status === 'connected' || p.status === 'configured' ? 'ok' : 'warn'}">${esc(p.status)}</span></td></tr>`).join('');
     const recent = (s.recent || []).map((r) => `<tr><td class="mono"><small>${esc(r.created_at)}</small></td>
 <td class="mono">${esc(r.model_id)}</td><td>${r.total_tokens}</td>
 <td>${r.status === 'success' ? '<span class="badge ok">ok</span>' : `<span class="badge bad">${esc(r.error_code || r.status)}</span>`}</td></tr>`).join('');
@@ -332,7 +359,7 @@ ${card('Error rate', (s.errRate ?? '0%'), 'failed / total · p50 ' + (s.p50 ?? '
 <div class="grid c2">
 <div class="card"><h3>SYSTEM STATUS — PROVIDERS</h3>
 <table><tr><th>PROVIDER</th><th>ID</th><th>REGISTRY</th><th>CONNECTION</th></tr>${provRows}</table>
-<p><small>Phase 1: registry only. Inference connects in Phase 2 — statuses flip to <code class="inline">connected</code> without API changes.</small></p></div>
+<p><small>Gateway status: live DeepSeek adapter when <code class="inline">DEEPSEEK_API_KEY</code> is configured server-side, otherwise honest <code class="inline">503 provider_not_connected</code> — statuses flip without API changes.</small></p></div>
 <div class="card"><h3>RECENT REQUESTS</h3>
 ${recent ? `<table><tr><th>TIME</th><th>MODEL</th><th>TOKENS</th><th>STATUS</th></tr>${recent}</table><p><a href="/dashboard/logs">All logs →</a></p>`
   : '<div class="empty">No requests yet. Logs will appear here once the gateway is used.</div>'}</div>
@@ -380,7 +407,7 @@ ${rows || '<tr><td colspan="6"><div class="empty">Belum ada API key. Buat key pe
 <p><small>In: $${m.price_input_per_1k}/1K · Out: $${m.price_output_per_1k}/1K${m.fallback ? ` · Fallback: <code class="inline">${esc(m.fallback.model)}</code>` : ''}</small></p></div>`;
     }).join('');
     return layout({ title: 'Models', user, active: 'Models', body: `
-<h1>Models</h1><p class="sub">Registry/configuration data — public model IDs stay stable even when upstream providers change. Inference connects in Phase 2.</p>
+<h1>Models</h1><p class="sub">Registry data — public model IDs stay stable even when upstream providers change. Only enabled models accept traffic.</p>
 <div class="grid c2">${cards || '<div class="empty">No models in registry.</div>'}</div>` });
   },
 
@@ -400,10 +427,9 @@ ${tr ? `<table><tr><th>TIMESTAMP</th><th>REQUEST</th><th>API KEY</th><th>MODEL</
   playground(user, models) {
     const opts = models.filter((m) => m.enabled).map((m) => `<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('');
     return layout({ title: 'Playground', user, active: 'Playground', body: `
-<h1>Playground</h1><p class="sub">Developer test console for the gateway. <span id="pgmeta"></span></p>
-<div class="alert warn" role="status"><strong>Provider not connected yet.</strong> The form below is wired to the gateway structure and will activate in Phase 2 — no request is sent to any AI provider today.</div>
+<h1>Playground</h1><p class="sub">Developer test console — runs the same gateway pipeline as <code class="inline">/v1</code> using your signed-in session (no API key needed in the browser). <span id="pgmeta"></span></p>
 <meta name="csrf-token" content="${esc(user.csrf || '')}">
-<div class="chatlog" id="chatlog" aria-live="polite"><div class="msg sys">Pick a model and send a prompt. In Phase 2 this goes through the same router + provider as <code class="inline">/v1</code>.</div></div><br>
+<div class="chatlog" id="chatlog" aria-live="polite"><div class="msg sys">Pick a model and send a prompt. Responses stream token-by-token when the provider is connected.</div></div><br>
 <form onsubmit="playgroundSend(event)" class="grid" style="grid-template-columns:1fr" aria-label="Playground">
 <div class="row"><label class="sr" for="pgmodel">Model</label><select id="pgmodel" name="model" style="max-width:260px">${opts}</select>
 <label for="pgtemp">Temperature</label><input id="pgtemp" type="number" name="temperature" min="0" max="2" step="0.1" value="0.7" style="max-width:90px">
@@ -473,8 +499,7 @@ ${error ? `<div class="alert bad" role="alert">${esc(error)}</div>` : ''}
 
   sdk() {
     return layout({ title: 'SDK', user: null, active: 'SDK', dash: false, body: `
-<h1>SDK</h1><p class="sub">CiptaModel speaks the OpenAI API — every OpenAI SDK works. Just point the base URL at us.${phase2Badge()}</p>
-<div class="alert warn">Inference activates in Phase 2. The snippets below are the final integration contract — save them, they will work unchanged.</div>
+<h1>SDK</h1><p class="sub">CiptaModel speaks the OpenAI API — every OpenAI SDK works. Just point the base URL at us.</p>
 <h2>Python</h2><pre>from openai import OpenAI
 
 client = OpenAI(
@@ -500,7 +525,7 @@ const r = await client.chat.completions.create({
 
   examples() {
     return layout({ title: 'Examples', user: null, active: 'Examples', dash: false, body: `
-<h1>Examples</h1><p class="sub">Copy-paste recipes for common clients.${phase2Badge()}</p>
+<h1>Examples</h1><p class="sub">Copy-paste recipes for common clients.</p>
 <h2>cURL — chat completion</h2><pre>curl ${esc(config.publicApiBaseUrl)}/chat/completions \\
   -H "Authorization: Bearer $CIPTAMODEL_API_KEY" \\
   -H "Content-Type: application/json" \\
@@ -521,7 +546,7 @@ const DOCS = {
 <p>CiptaModel is a unified AI API gateway: <strong>one API key, many AI models</strong>, over an OpenAI-compatible HTTP API.</p>
 <p>Public base URL: <code class="inline">${esc(config.publicApiBaseUrl)}</code></p>
 <p>Architecture: your client → CiptaModel gateway → model router → provider adapter. Providers can be swapped without changing your integration.</p>
-<p><strong>Phase 1 status:</strong> platform foundation (console, keys, registry, docs) is live. AI inference activates in Phase 2.</p>` },
+<p>DeepSeek is the first live provider. Set <code class="inline">DEEPSEEK_API_KEY</code> server-side to enable inference; without it chat returns <code class="inline">503 provider_not_connected</code>.</p>` },
   quickstart: { title: 'Quickstart', phase2: false, body: `
 <ol><li>Create an account and <a href="/dashboard/api-keys">create an API key</a>.</li>
 <li>Base URL: <code class="inline">${esc(config.publicApiBaseUrl)}</code></li>
@@ -531,7 +556,7 @@ const DOCS = {
   -H "Content-Type: application/json" \\
   -d '{"model": "deepseek-v4.1-flash",
        "messages": [{"role": "user", "content": "Hello"}]}'</pre>
-<p><small>Chat inference activates in Phase 2 — the contract above is final.</small></p>` },
+<p>Every response and error carries an <code class="inline">X-Request-ID</code> header for tracing. Send your own <code class="inline">X-Request-ID</code> (alphanumeric, max 64 chars) or one is generated.</p>` },
   authentication: { title: 'Authentication', phase2: false, body: `
 <p>All <code class="inline">/v1</code> endpoints require a Bearer API key created in the dashboard:</p>
 <pre>Authorization: Bearer sk-cm-live-...</pre>
@@ -541,21 +566,23 @@ const DOCS = {
 <pre>curl ${esc(config.publicApiBaseUrl)}/models \\
   -H "Authorization: Bearer sk-cm-live-..."</pre>
 <p>Registry default: <code class="inline">deepseek-v4.1-flash</code> (1M context, chat · coding · streaming). Public IDs stay stable when providers change.</p>` },
-  'chat-completions': { title: 'Chat Completions', phase2: true, body: `
-<p>OpenAI-compatible <code class="inline">POST /v1/chat/completions</code>. Supports <code class="inline">messages</code>, <code class="inline">temperature</code>, <code class="inline">max_tokens</code>, <code class="inline">stream</code>.</p>
+  'chat-completions': { title: 'Chat Completions', phase2: false, body: `
+<p>OpenAI-compatible <code class="inline">POST /v1/chat/completions</code> <span class="badge ok">Live</span>. Supports <code class="inline">model</code>, <code class="inline">messages</code>, <code class="inline">stream</code>, <code class="inline">temperature</code> (0–2), <code class="inline">max_tokens</code>, <code class="inline">top_p</code>, <code class="inline">stop</code>.</p>
 <pre>curl ${esc(config.publicApiBaseUrl)}/chat/completions \\
   -H "Authorization: Bearer sk-cm-live-..." \\
   -H "Content-Type: application/json" \\
   -d '{"model": "deepseek-v4.1-flash", "temperature": 0.7,
        "messages": [{"role": "system", "content": "You are concise."},
-                    {"role": "user", "content": "Explain rate limiting."}]}'</pre>` },
-  streaming: { title: 'Streaming', phase2: true, body: `
-<p>Set <code class="inline">"stream": true</code> to receive <code class="inline">text/event-stream</code> chunks in OpenAI format, terminated by <code class="inline">data: [DONE]</code>.</p>
+                    {"role": "user", "content": "Explain rate limiting."}]}'</pre>
+<p>Non-streaming returns a <code class="inline">chat.completion</code> object with real provider <code class="inline">usage</code> (prompt/completion/total tokens). Token counts come from the provider — never fabricated. A cost estimate appears when the model registry carries pricing.</p>` },
+  streaming: { title: 'Streaming', phase2: false, body: `
+<p>Set <code class="inline">"stream": true</code> <span class="badge ok">Live</span> to receive <code class="inline">text/event-stream</code> chunks in OpenAI format, terminated by <code class="inline">data: [DONE]</code>. Chunks flush as the provider emits them — nothing is buffered server-side.</p>
 <pre>curl -N ${esc(config.publicApiBaseUrl)}/chat/completions \\
   -H "Authorization: Bearer sk-cm-live-..." \\
   -H "Content-Type: application/json" \\
   -d '{"model": "deepseek-v4.1-flash", "stream": true,
-       "messages": [{"role": "user", "content": "Count to five"}]}'</pre>` },
+       "messages": [{"role": "user", "content": "Count to five"}]}'</pre>
+<p>Mid-stream provider failures arrive as an OpenAI-shaped error event followed by <code class="inline">[DONE]</code> — the HTTP status stays 200 once streaming has started.</p>` },
   'api-keys': { title: 'API Keys', phase2: false, body: `
 <p>Create keys at <a href="/dashboard/api-keys">Dashboard → API Keys</a>. Format: <code class="inline">sk-cm-live-…</code>. Manage lifecycle (revoke/delete) there; usage per key appears under <a href="/dashboard/usage">Usage</a>.</p>` },
   errors: { title: 'Errors', phase2: false, body: `
@@ -564,16 +591,22 @@ const DOCS = {
 <tr><td>400</td><td class="mono">invalid_request</td><td>Bad body / unknown field</td></tr>
 <tr><td>401</td><td class="mono">invalid_api_key</td><td>Missing, unknown or revoked key</td></tr>
 <tr><td>404</td><td class="mono">model_not_found</td><td>Unknown or disabled model</td></tr>
-<tr><td>429</td><td class="mono">rate_limit_exceeded / insufficient_quota</td><td>Slow down or upgrade plan</td></tr>
-<tr><td>503</td><td class="mono">provider_not_connected</td><td>Phase 1: inference not wired yet</td></tr>
-<tr><td>502/503</td><td class="mono">provider_error</td><td>Phase 2+: upstream failed (fallback attempted)</td></tr></table>` },
+<tr><td>429</td><td class="mono">rate_limit_exceeded / insufficient_quota</td><td>Slow down or upgrade plan (includes <code class="inline">Retry-After</code>)</td></tr>
+<tr><td>503</td><td class="mono">provider_not_connected</td><td>Provider credentials not configured server-side</td></tr>
+<tr><td>504</td><td class="mono">provider_timeout</td><td>Upstream timed out (retryable)</td></tr>
+<tr><td>502/503</td><td class="mono">provider_error</td><td>Upstream failed (retry + fallback attempted for transient errors)</td></tr></table>
+<p>All gateway errors include an OpenAI-shaped <code class="inline">error</code> object plus <code class="inline">request_id</code> and an <code class="inline">X-Request-ID</code> header. Provider failures are normalized — no API keys, headers, stacks, or paths leak.</p>` },
   'rate-limits': { title: 'Rate Limits', phase2: false, body: `
 <p>Limits apply per API key, per user, per IP, and per model, plus daily request/token quotas per plan. Defaults: Free 10 req/min, 100 req/day, 50K tokens/day — all configurable in the <code class="inline">plans</code> table without code changes.</p>
-<p>Exceeded minute limits return <code class="inline">429 rate_limit_exceeded</code>; exhausted daily quotas return <code class="inline">403 insufficient_quota</code>.</p>` },
+<p>Exceeded minute limits return <code class="inline">429 rate_limit_exceeded</code>; exhausted daily quotas return <code class="inline">429 insufficient_quota</code> — both with <code class="inline">Retry-After</code> and without contacting any upstream provider.</p>
+<p>The in-memory limiter is single-instance. Set <code class="inline">REDIS_URL</code> when running multiple instances — the swap is contained in <code class="inline">src/limits.js</code>.</p>` },
   usage: { title: 'Usage', phase2: false, body: `
 <p>Every gateway call records model, provider, input/output tokens, latency, status, and error code. Inspect yours at <a href="/dashboard/usage">Dashboard → Usage</a> and <a href="/dashboard/logs">Logs</a>.</p>` },
-  sdk: { title: 'SDK', phase2: true, body: `<p>Use any OpenAI SDK with <code class="inline">baseURL ${esc(config.publicApiBaseUrl)}</code>. See the <a href="/sdk">SDK page</a> for Python/JS snippets. Snippets are the final contract; calls succeed once inference activates.</p>` },
-  examples: { title: 'Examples', phase2: true, body: `<p>Copy-paste recipes live on the <a href="/examples">Examples page</a> (cURL, streaming, list models).</p>` },
+  sdk: { title: 'SDK', phase2: false, body: `<p>Use any OpenAI SDK with <code class="inline">baseURL ${esc(config.publicApiBaseUrl)}</code>. See the <a href="/sdk">SDK page</a> for Python/JS snippets. The gateway is OpenAI-compatible: Bearer auth, <code class="inline">/v1/models</code>, <code class="inline">/v1/chat/completions</code>, SSE streaming, and standard error shapes all work with unmodified clients (Cursor, Cline, Open WebUI).</p>` },
+  examples: { title: 'Examples', phase2: false, body: `<p>Copy-paste recipes live on the <a href="/examples">Examples page</a> (cURL, streaming, list models).</p>
+<p><strong>Cursor:</strong> Settings → Models → OpenAI API Key = your <code class="inline">sk-cm-live-…</code>, Override OpenAI Base URL = <code class="inline">${esc(config.publicApiBaseUrl)}</code>, custom model <code class="inline">deepseek-v4.1-flash</code>.</p>
+<p><strong>Cline / Roo Code:</strong> provider OpenAI Compatible, same base URL + key + model.</p>
+<p><strong>Open WebUI:</strong> Settings → Connections → OpenAI, same base URL + key, then refresh models.</p>` },
 };
 
 function docsPage(slug) {
@@ -590,7 +623,29 @@ function docsPage(slug) {
 // ============================================================
 app.get('/', async () => views.landing());
 app.get('/pricing', async () => views.pricing(getDb().prepare('SELECT * FROM plans ORDER BY requests_per_day').all()));
-app.get('/healthz', async () => ({ ok: true, phase: '1-foundation', providers: listProviders().map((p) => ({ name: p.name, status: p.status })) }));
+
+// Health: app liveness + per-provider status WITHOUT secrets. Provider
+// detail endpoint is admin/session-authenticated; health shows names only.
+function providerHealth() {
+  const router = getRouter();
+  return Object.values(router.adapters).map((a) => {
+    let status = a.status;
+    if (a.name === 'deepseek') {
+      if (!a.enabled) status = 'disabled';
+      else if (!a.configured) status = 'not_configured';
+      else status = 'configured';
+    } else if (!a.enabled) {
+      status = 'disabled';
+    }
+    return { name: a.name, status };
+  });
+}
+app.get('/healthz', async () => ({ ok: true, phase: '2-gateway', providers: providerHealth() }));
+app.get('/health', async (req, reply) => {
+  // Alias for orchestrators; same payload, no secrets.
+  reply.header('Cache-Control', 'no-store');
+  return { ok: true, phase: '2-gateway', providers: providerHealth() };
+});
 
 app.get('/styles.css', async (req, reply) => {
   reply.header('Content-Type', 'text/css; charset=utf-8');
@@ -643,7 +698,10 @@ app.get('/logout', async (req, reply) => { destroySession(req, reply); return re
 app.get('/dashboard', async (req, reply) => {
   const user = await requireUser(req, reply);
   if (!user) return;
-  return views.dashboard(user, userStats(user.id), listProviders());
+  const live = providerHealth();
+  const byName = Object.fromEntries(live.map((p) => [p.name, p.status]));
+  const merged = listProviders().map((p) => ({ ...p, status: byName[p.name] || p.status }));
+  return views.dashboard(user, userStats(user.id), merged);
 });
 
 // API keys
@@ -714,19 +772,22 @@ app.get('/dashboard/playground', async (req, reply) => {
   if (!user) return;
   return views.playground(user, listModels({ enabledOnly: false }));
 });
-// Phase 1: playground validates input + contract, then honestly reports no provider.
+// Playground: session-authenticated console route that executes the SAME
+// gateway pipeline as /v1 (validation → router → adapter) without ever
+// exposing a user's secret API key to the browser.
 app.post('/api/playground', async (req, reply) => {
   const user = await currentUser(req);
   if (!user) return sendErr(reply, 401, 'Sign in required.', 'auth_error', 'unauthorized');
-  const { model, messages, prompt } = req.body || {};
+  const { model, messages, prompt, temperature, max_tokens, top_p, stop, stream } = req.body || {};
   const modelId = model || 'deepseek-v4.1-flash';
   const msgs = Array.isArray(messages) ? messages
     : (typeof prompt === 'string' && prompt.trim() ? [{ role: 'user', content: prompt.trim() }] : []);
-  if (!msgs.length) return sendErr(reply, 400, "Provide 'prompt' or a non-empty 'messages' array.", 'invalid_request', 'invalid_request');
-  const router = buildRouter(dbm);
-  const { error } = router.resolve(modelId);
-  if (error === 'model_not_found') return sendErr(reply, 404, `Model '${modelId}' not found in the registry.`, 'not_found', 'model_not_found');
-  return sendErr(reply, 503, 'AI provider not connected yet — playground activates in Phase 2.', 'service_error', 'provider_not_connected', { model: modelId });
+  const out = await runGateway({
+    req, reply, user, keyId: null,
+    body: { model: modelId, messages: msgs, temperature, max_tokens, top_p, stop, stream: stream === true },
+    via: 'playground',
+  });
+  return out === undefined ? reply : out;
 });
 
 app.get('/dashboard/usage', async (req, reply) => {
@@ -800,56 +861,325 @@ app.get('/docs.json', async () => ({
 }));
 
 // ============================================================
-// Gateway stub — Phase 1: contract present, inference not wired
+// Gateway — Phase 2: real OpenAI-compatible AI gateway.
+// server.js owns the pipeline (auth → validation → limits → usage);
+// provider HTTP lives ONLY in src/providers.js adapters.
 // ============================================================
 function authenticateGateway(req) {
   const h = req.headers.authorization || '';
   const m = h.match(/^Bearer\s+(.+)$/i);
   if (!m) return { error: 'missing' };
-  const row = getDb().prepare(`SELECT k.*, u.email, u.plan FROM api_keys k
-    JOIN users u ON u.id = k.user_id WHERE k.key_hash = ?`).get(hashSecret(m[1].trim()));
+  const token = m[1].trim();
+  // Format gate first so malformed values fail identically to unknown ones
+  // (no oracle for whether a partial key exists).
+  if (!/^sk-cm-live-[A-Za-z0-9_-]{10,}$/.test(token)) return { error: 'invalid' };
+  const row = getDb().prepare(`SELECT k.*, u.email, u.plan, u.id AS uid FROM api_keys k
+    JOIN users u ON u.id = k.user_id WHERE k.key_hash = ?`).get(hashSecret(token));
   if (!row || row.status !== 'active') return { error: 'invalid' };
-  return { key: row, user: { id: row.user_id, email: row.email, plan: row.plan } };
+  return { key: row, user: { id: row.uid, email: row.email, plan: row.plan } };
+}
+
+// Parse + validate the chat request BEFORE any rate-limit, quota, or
+// upstream contact. Returns { ok, value } or { ok:false, status, message, type, code, param }.
+function validateChatBody(body) {
+  const g = config.gateway;
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, status: 400, message: 'Request body must be a JSON object.', type: 'invalid_request_error', code: 'invalid_request', param: null };
+  }
+  const { model, messages, stream, temperature, max_tokens, top_p, stop } = body;
+  if (typeof model !== 'string' || !model.trim() || model.length > 128) {
+    return { ok: false, status: 400, message: "Field 'model' is required and must be a string.", type: 'invalid_request_error', code: 'invalid_request', param: 'model' };
+  }
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return { ok: false, status: 400, message: "Field 'messages' must be a non-empty array.", type: 'invalid_request_error', code: 'invalid_request', param: 'messages' };
+  }
+  if (messages.length > g.maxMessages) {
+    return { ok: false, status: 400, message: `Field 'messages' exceeds the ${g.maxMessages}-message limit.`, type: 'invalid_request_error', code: 'invalid_request', param: 'messages' };
+  }
+  const clean = [];
+  let totalChars = 0;
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (!m || typeof m !== 'object' || Array.isArray(m)) {
+      return { ok: false, status: 400, message: `messages[${i}] must be an object with {role, content}.`, type: 'invalid_request_error', code: 'invalid_request', param: 'messages' };
+    }
+    if (!['system', 'user', 'assistant', 'tool'].includes(m.role)) {
+      return { ok: false, status: 400, message: `messages[${i}].role must be system, user, assistant, or tool.`, type: 'invalid_request_error', code: 'invalid_request', param: 'messages' };
+    }
+    if (typeof m.content !== 'string') {
+      return { ok: false, status: 400, message: `messages[${i}].content must be a string.`, type: 'invalid_request_error', code: 'invalid_request', param: 'messages' };
+    }
+    if (m.content.length > g.maxContentChars) {
+      return { ok: false, status: 400, message: `messages[${i}].content exceeds the ${g.maxContentChars}-character limit.`, type: 'invalid_request_error', code: 'context_length_exceeded', param: 'messages' };
+    }
+    totalChars += m.content.length;
+    if (totalChars > g.maxTotalChars) {
+      return { ok: false, status: 400, message: `Total message content exceeds the ${g.maxTotalChars}-character limit.`, type: 'invalid_request_error', code: 'context_length_exceeded', param: 'messages' };
+    }
+    clean.push({ role: m.role, content: m.content });
+  }
+  if (stream !== undefined && typeof stream !== 'boolean') {
+    return { ok: false, status: 400, message: "Field 'stream' must be a boolean.", type: 'invalid_request_error', code: 'invalid_request', param: 'stream' };
+  }
+  if (temperature !== undefined && (typeof temperature !== 'number' || Number.isNaN(temperature) || temperature < 0 || temperature > 2)) {
+    return { ok: false, status: 400, message: "Field 'temperature' must be a number between 0 and 2.", type: 'invalid_request_error', code: 'invalid_request', param: 'temperature' };
+  }
+  if (max_tokens !== undefined && (!Number.isInteger(max_tokens) || max_tokens < 1 || max_tokens > 128000)) {
+    return { ok: false, status: 400, message: "Field 'max_tokens' must be an integer between 1 and 128000.", type: 'invalid_request_error', code: 'invalid_request', param: 'max_tokens' };
+  }
+  if (top_p !== undefined && (typeof top_p !== 'number' || Number.isNaN(top_p) || top_p <= 0 || top_p > 1)) {
+    return { ok: false, status: 400, message: "Field 'top_p' must be a number in (0, 1].", type: 'invalid_request_error', code: 'invalid_request', param: 'top_p' };
+  }
+  if (stop !== undefined) {
+    const okStop = typeof stop === 'string' || (Array.isArray(stop) && stop.length <= 4 && stop.every((s) => typeof s === 'string'));
+    if (!okStop) {
+      return { ok: false, status: 400, message: "Field 'stop' must be a string or an array of up to 4 strings.", type: 'invalid_request_error', code: 'invalid_request', param: 'stop' };
+    }
+  }
+  return {
+    ok: true,
+    value: {
+      model: model.trim(), messages: clean, stream: stream === true,
+      temperature, maxTokens: max_tokens, topP: top_p, stop,
+    },
+  };
+}
+
+function gatewayError(reply, requestId, { status, message, type, code, param, retryAfter }) {
+  const rid = requestId || newRequestId();
+  reply.header('X-Request-ID', rid);
+  if (retryAfter) reply.header('Retry-After', String(retryAfter));
+  const extra = { ...(param ? { param } : {}), request_id: rid };
+  return sendErr(reply, status, message, type, code, extra);
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Attempt one adapter call (non-stream), recording a provider_attempt row.
+// Returns { ok, result } or { ok:false, error }.
+async function attemptOnce({ requestId, adapter, upstreamModel, chatReq, attemptNo, signal, timeoutMs }) {
+  const t0 = Date.now();
+  try {
+    const result = await adapter.chatCompletion({ ...chatReq, model: upstreamModel, timeoutMs, signal });
+    logAttempt({ requestId, provider: adapter.name, model: upstreamModel, status: 'success', latencyMs: Date.now() - t0, attemptNo });
+    return { ok: true, result };
+  } catch (e) {
+    const code = e && e.code ? e.code : 'provider_error';
+    logAttempt({ requestId, provider: adapter.name, model: upstreamModel, status: 'error', errorCode: code, latencyMs: Date.now() - t0, attemptNo });
+    return { ok: false, error: e };
+  }
+}
+
+// Shared gateway pipeline for /v1/chat/completions AND /api/playground.
+// Order: request-id → validation → registry → rate/quota → adapter (+retry,
+// +fallback for transient failures only) → usage → OpenAI-compatible output.
+// Non-stream returns the response object (undefined for stream: already written).
+async function runGateway({ req, reply, user, keyId, body, via }) {
+  const t0 = Date.now();
+  const requestId = sanitizeRequestId(req.headers['x-request-id']) || newRequestId();
+  reply.header('X-Request-ID', requestId);
+
+  const v = validateChatBody(body);
+  if (!v.ok) {
+    logEvent({ level: 'warn', msg: 'gateway validation failed', request_id: requestId, code: v.code, via });
+    if (keyId && v.code === 'context_length_exceeded') {
+      // Count abusive oversize attempts against quota without contacting upstream.
+      logUsage({ requestId, userId: user.id, keyId, modelId: String((body || {}).model || 'unknown'), provider: 'none', latencyMs: Date.now() - t0, status: 'error', errorCode: v.code });
+    }
+    return gatewayError(reply, requestId, v);
+  }
+  const chat = v.value;
+
+  const router = getRouter();
+  const resolved = router.resolve(chat.model);
+  if (resolved.error === 'model_not_found') {
+    return gatewayError(reply, requestId, {
+      status: 404, message: `Model '${chat.model}' not found. See GET /v1/models.`,
+      type: 'invalid_request_error', code: 'model_not_found', param: 'model',
+    });
+  }
+  if (resolved.error === 'provider_not_connected' || !resolved.adapter) {
+    logUsage({ requestId, userId: user.id, keyId, modelId: chat.model, provider: (resolved.entry && resolved.entry.provider) || 'none', latencyMs: Date.now() - t0, status: 'error', errorCode: 'provider_not_connected' });
+    const name = resolved.entry ? resolved.entry.provider : 'provider';
+    return gatewayError(reply, requestId, {
+      status: 503, message: `The '${name}' provider is not connected yet. AI inference activates once provider credentials are configured.`,
+      type: 'service_unavailable', code: 'provider_not_connected', param: 'model',
+    });
+  }
+  const { entry, adapter } = resolved;
+
+  // Rate limit + quota BEFORE any upstream contact.
+  const plan = getPlan(user.plan);
+  const rate = checkRate({ backend: limiter, userId: user.id, keyId: keyId || `session:${user.id}`, modelId: chat.model, ip: req.ip, rpm: plan.rpm });
+  if (rate.limited) {
+    logUsage({ requestId, userId: user.id, keyId, modelId: chat.model, provider: entry.provider, latencyMs: Date.now() - t0, status: 'error', errorCode: 'rate_limit_exceeded' });
+    return gatewayError(reply, requestId, { status: 429, message: rate.message, type: 'rate_limit_error', code: 'rate_limit_exceeded', retryAfter: 60 });
+  }
+  const quota = checkQuota(getDb(), user.id, plan);
+  if (quota.limited) {
+    logUsage({ requestId, userId: user.id, keyId, modelId: chat.model, provider: entry.provider, latencyMs: Date.now() - t0, status: 'error', errorCode: 'insufficient_quota' });
+    return gatewayError(reply, requestId, { status: 429, message: quota.message, type: 'insufficient_quota', code: 'insufficient_quota', retryAfter: 60 });
+  }
+
+  if (keyId) {
+    try { getDb().prepare('UPDATE api_keys SET last_used_at=? WHERE id=?').run(new Date().toISOString(), keyId); } catch { /* ignore */ }
+  }
+
+  const upstreamModel = entry.upstream_model || entry.id || chat.model;
+  const chatReq = {
+    messages: chat.messages,
+    maxTokens: chat.maxTokens, temperature: chat.temperature, topP: chat.topP, stop: chat.stop,
+  };
+  const chatId = 'cm_chat_' + requestId.replace(/^cm_req_/, '');
+  const created = Math.floor(Date.now() / 1000);
+
+  const finish = (extra = {}) => {
+    logEvent({ level: 'info', msg: 'gateway request', request_id: requestId, user: user.id, model: chat.model, provider: entry.provider, stream: chat.stream, via, latency_ms: Date.now() - t0, ...extra });
+  };
+
+  // ---------------- non-streaming ----------------
+  if (!chat.stream) {
+    let attempt = await attemptOnce({ requestId, adapter, upstreamModel, chatReq, attemptNo: 1, timeoutMs: config.deepseek.timeoutMs });
+    // Conservative retry: transient upstream failures only, non-stream only.
+    if (!attempt.ok && attempt.error && attempt.error.retryable && !(attempt.error instanceof ProviderNotConnectedError)) {
+      await sleep(config.gateway.retryBaseDelayMs);
+      attempt = await attemptOnce({ requestId, adapter, upstreamModel, chatReq, attemptNo: 2, timeoutMs: config.deepseek.timeoutMs });
+    }
+    // Fallback: same transient class, configured fallback model only, single attempt.
+    let servedBy = { provider: entry.provider, model: chat.model, fallback: false };
+    if (!attempt.ok && attempt.error && attempt.error.retryable && entry.fallback && entry.fallback.model && entry.fallback.model !== chat.model) {
+      const fb = router.resolve(entry.fallback.model);
+      if (!fb.error && fb.adapter) {
+        const fbModel = fb.entry.upstream_model || fb.entry.id || entry.fallback.model;
+        const fbAttempt = await attemptOnce({ requestId, adapter: fb.adapter, upstreamModel: fbModel, chatReq, attemptNo: 3, timeoutMs: config.deepseek.timeoutMs });
+        if (fbAttempt.ok) {
+          attempt = fbAttempt;
+          servedBy = { provider: fb.entry.provider, model: entry.fallback.model, fallback: true };
+        }
+      }
+    }
+    if (!attempt.ok) {
+      const e = attempt.error || new ProviderError('Provider request failed.');
+      const code = (e && e.code) || 'provider_error';
+      // Map adapter failure class → gateway HTTP status (never leak internals).
+      let status = 502;
+      let type = 'server_error';
+      if (e instanceof ProviderNotConnectedError) { status = 503; type = 'service_unavailable'; }
+      else if (code === 'provider_timeout') { status = 504; type = 'timeout_error'; }
+      else if (code === 'provider_rate_limit' || code === 'provider_unavailable') { status = 503; type = 'service_unavailable'; }
+      else if (code === 'provider_authentication_error') { status = 502; type = 'server_error'; }
+      logUsage({ requestId, userId: user.id, keyId, modelId: chat.model, provider: entry.provider, latencyMs: Date.now() - t0, status: 'error', errorCode: code });
+      finish({ error: code });
+      const messages = {
+        provider_not_connected: 'The model provider is not connected yet.',
+        provider_timeout: 'The model provider timed out. Please retry.',
+        provider_rate_limit: 'The model provider is rate-limited. Please retry shortly.',
+        provider_unavailable: 'The model provider is temporarily unavailable. Please retry.',
+        provider_authentication_error: 'The gateway failed to authenticate with the model provider.',
+        provider_invalid_response: 'The model provider returned an invalid response.',
+      };
+      return gatewayError(reply, requestId, { status, message: messages[code] || 'The model provider failed. Please retry.', type, code });
+    }
+    const out = attempt.result;
+    const cost = estimateCost(entry, out.inputTokens, out.outputTokens);
+    logUsage({
+      requestId, userId: user.id, keyId, modelId: chat.model,
+      provider: servedBy.fallback ? `${servedBy.provider}:fallback` : servedBy.provider,
+      inputTokens: out.inputTokens || 0, outputTokens: out.outputTokens || 0,
+      latencyMs: Date.now() - t0, status: 'success', estCost: cost,
+    });
+    finish({ fallback: servedBy.fallback || undefined });
+    return {
+      id: chatId, object: 'chat.completion', created, model: chat.model,
+      choices: [{ index: 0, message: { role: 'assistant', content: out.content ?? '' }, finish_reason: out.finishReason || 'stop' }],
+      usage: {
+        prompt_tokens: out.inputTokens ?? 0,
+        completion_tokens: out.outputTokens ?? 0,
+        total_tokens: (out.inputTokens ?? 0) + (out.outputTokens ?? 0),
+      },
+      ...(cost === null ? {} : { _cost_estimate: cost }),
+    };
+  }
+
+  // ---------------- SSE streaming ----------------
+  // Conservative: NO retry and NO fallback once bytes are flowing (a retry
+  // would double-bill upstream and corrupt the client stream).
+  const ctrl = new AbortController();
+  req.raw.on('close', () => { try { ctrl.abort(); } catch { /* ignore */ } });
+  reply.raw.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+    'X-Request-ID': requestId,
+  });
+  const send = (obj) => { try { reply.raw.write(`data: ${JSON.stringify(obj)}\n\n`); } catch { /* client gone */ } };
+  const chunk = (delta, finishReason) => send({
+    id: chatId, object: 'chat.completion.chunk', created, model: chat.model,
+    choices: [{ index: 0, delta, finish_reason: finishReason || null }],
+  });
+  chunk({ role: 'assistant' });
+  const streamT0 = Date.now();
+  let streamUsage = null;
+  try {
+    const out = await adapter.streamChatCompletion({
+      ...chatReq,
+      model: upstreamModel,
+      timeoutMs: config.deepseek.timeoutMs,
+      stallTimeoutMs: config.gateway.streamStallTimeoutMs,
+      signal: ctrl.signal,
+      onToken: async (tok) => { chunk({ content: tok }); },
+      onUsage: async (u) => { streamUsage = u; },
+    });
+    logAttempt({ requestId, provider: adapter.name, model: upstreamModel, status: 'success', latencyMs: Date.now() - streamT0, attemptNo: 1 });
+    const inT = streamUsage ? streamUsage.inputTokens : out.inputTokens;
+    const outT = streamUsage ? streamUsage.outputTokens : out.outputTokens;
+    const cost = estimateCost(entry, inT, outT);
+    chunk({}, out.finishReason || 'stop');
+    reply.raw.write('data: [DONE]\n\n');
+    try { reply.raw.end(); } catch { /* ignore */ }
+    logUsage({
+      requestId, userId: user.id, keyId, modelId: chat.model, provider: entry.provider,
+      inputTokens: inT || 0, outputTokens: outT || 0,
+      latencyMs: Date.now() - t0, status: 'success', estCost: cost,
+    });
+    finish();
+  } catch (e) {
+    const code = (e && e.code) || 'provider_error';
+    logAttempt({ requestId, provider: adapter.name, model: upstreamModel, status: 'error', errorCode: code, latencyMs: Date.now() - streamT0, attemptNo: 1 });
+    logUsage({ requestId, userId: user.id, keyId, modelId: chat.model, provider: entry.provider, latencyMs: Date.now() - t0, status: 'error', errorCode: code });
+    finish({ error: code });
+    // Mid-stream errors must be OpenAI-shaped events, not HTTP status swaps.
+    try {
+      send({ id: chatId, object: 'chat.completion.chunk', created, model: chat.model, choices: [{ index: 0, delta: {}, finish_reason: 'error' }], error: { message: 'The model provider failed mid-stream.', code, request_id: requestId } });
+      reply.raw.write('data: [DONE]\n\n');
+      reply.raw.end();
+    } catch { /* client gone */ }
+  }
+  return undefined;
 }
 
 app.get('/v1/models', async (req, reply) => {
   const auth = authenticateGateway(req);
   if (auth.error) {
     logEvent({ level: 'warn', msg: 'v1.models unauthorized' });
-    return sendErr(reply, 401, 'Invalid or missing API key.', 'auth_error', 'invalid_api_key');
+    return gatewayError(reply, sanitizeRequestId(req.headers['x-request-id']), {
+      status: 401, message: 'Invalid or missing API key.', type: 'invalid_request_error', code: 'invalid_api_key',
+    });
   }
-  return { object: 'list', data: buildRouter(dbm).enabledModels() };
+  return { object: 'list', data: getRouter().enabledModels() };
 });
 
 app.post('/v1/chat/completions', async (req, reply) => {
-  const t0 = Date.now();
   const auth = authenticateGateway(req);
   if (auth.error) {
     logEvent({ level: 'warn', msg: 'v1.chat unauthorized' });
-    return sendErr(reply, 401, 'Invalid or missing API key.', 'auth_error', 'invalid_api_key');
+    return gatewayError(reply, sanitizeRequestId(req.headers['x-request-id']), {
+      status: 401, message: 'Invalid or missing API key.', type: 'invalid_request_error', code: 'invalid_api_key',
+    });
   }
-  const { user, key } = auth;
-  const body = req.body || {};
-  const modelId = body.model;
-  const messages = body.messages;
-  if (!modelId || typeof modelId !== 'string') return sendErr(reply, 400, "Field 'model' is required.", 'invalid_request', 'invalid_request');
-  if (!Array.isArray(messages) || !messages.length) return sendErr(reply, 400, "Field 'messages' must be a non-empty array.", 'invalid_request', 'invalid_request');
-  const router = buildRouter(dbm);
-  const { error } = router.resolve(modelId);
-  if (error === 'model_not_found') return sendErr(reply, 404, `Model '${modelId}' not found. See GET /v1/models.`, 'not_found', 'model_not_found');
-  // Minute-rate + daily quota layers are live in Phase 1 (limits.js).
-  const plan = getPlan(user.plan);
-  const rate = checkRate({ backend: limiter, userId: user.id, keyId: key.id, modelId, ip: req.ip, rpm: plan.rpm });
-  if (rate.limited) return sendErr(reply, 429, rate.message, 'rate_limit_error', 'rate_limit_exceeded');
-  const quota = checkQuota(getDb(), user.id, plan);
-  if (quota.limited) {
-    return sendErr(reply, 403, quota.message, 'quota_error', 'insufficient_quota');
-  }
-  // Honest Phase-1 stop: auth + validation + limits pass, no inference yet.
-  logUsage({ userId: user.id, keyId: key.id, modelId, provider: 'none', latencyMs: Date.now() - t0, status: 'error', errorCode: 'provider_not_connected' });
-  try { getDb().prepare('UPDATE api_keys SET last_used_at=? WHERE id=?').run(new Date().toISOString(), key.id); } catch { /* ignore */ }
-  logEvent({ level: 'info', msg: 'v1.chat phase1-stub', model: modelId });
-  return sendErr(reply, 503, 'AI provider not connected yet — chat completions activate in Phase 2. Your key, model, and quota checks all passed.', 'service_error', 'provider_not_connected', { model: modelId });
+  const out = await runGateway({ req, reply, user: auth.user, keyId: auth.key.id, body: req.body, via: 'api' });
+  return out === undefined ? reply : out;
 });
 
 // 404 + error shape
@@ -861,7 +1191,17 @@ app.setNotFoundHandler(async (req, reply) => {
 app.setErrorHandler(async (err, req, reply) => {
   logEvent({ level: 'error', msg: 'unhandled', route: req.url });
   if (req.url.startsWith('/v1/') || req.url.startsWith('/api/')) {
-    return sendErr(reply, 500, 'Internal server error.', 'server_error', 'internal_error');
+    // Normalize Fastify parse/validation failures (e.g. malformed JSON,
+    // oversize body) into the OpenAI-shaped contract; never leak stacks.
+    const status = err && Number.isInteger(err.statusCode) && err.statusCode >= 400 && err.statusCode < 500 ? err.statusCode : 500;
+    const code = status === 413 ? 'request_too_large' : 'invalid_request';
+    const message = status === 413 ? 'Request body exceeds the size limit.'
+      : status === 415 ? 'Content-Type must be application/json.'
+      : status === 400 ? 'Malformed JSON request body.'
+      : 'Internal server error.';
+    return gatewayError(reply, sanitizeRequestId(req.headers && req.headers['x-request-id']), {
+      status, message, type: status === 500 ? 'server_error' : 'invalid_request_error', code,
+    });
   }
   return reply.code(500).type('text/html').send('<h1>500</h1><p>Something went wrong.</p>');
 });
@@ -870,11 +1210,11 @@ app.setErrorHandler(async (err, req, reply) => {
 async function start() {
   connect();
   await app.listen({ port: config.port, host: '0.0.0.0' });
-  console.log(`CiptaModel (phase 1) listening on ${config.baseUrl} — gateway stub at ${config.baseUrl}/v1`);
+  console.log(`CiptaModel listening on ${config.baseUrl} — gateway at ${config.baseUrl}/v1`);
 }
 
 if (require.main === module) {
   start().catch((e) => { console.error(e); process.exit(1); });
 }
 
-module.exports = { app, start, buildRouter, limiter, authenticateGateway };
+module.exports = { app, start, getRouter, setRouterOverrides, limiter, authenticateGateway, validateChatBody, estimateCost };

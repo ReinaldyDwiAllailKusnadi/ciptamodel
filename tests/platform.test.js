@@ -16,9 +16,9 @@ for (const suffix of ['', '-wal', '-shm', '-journal']) {
 
 const db = require('../src/db.js');
 const { generateApiKey, hashSecret } = db;
-const { app } = require('../src/server.js');
+const { app, setRouterOverrides, limiter } = require('../src/server.js');
 const { createMemoryBackend, checkRate, checkQuota } = require('../src/limits.js');
-const { ProviderAdapter, ProviderNotConnectedError, Router } = require('../src/providers.js');
+const { ProviderAdapter, ProviderNotConnectedError, ProviderError, MockAdapter, Router, DeepSeekAdapter } = require('../src/providers.js');
 
 let userId;
 let sessionCookie;
@@ -161,7 +161,7 @@ describe('api keys', () => {
   });
 });
 
-// ---------- gateway contract (Phase 1 stub — no inference) ----------
+// ---------- gateway: real Phase-2 pipeline (mock adapters — no network) ----------
 describe('gateway', () => {
   let apiKey;
 
@@ -170,12 +170,26 @@ describe('gateway', () => {
     apiKey = g.secret;
     db.getDb().prepare('INSERT INTO api_keys (id, user_id, name, key_hash, key_prefix) VALUES (?,?,?,?,?)')
       .run('key_gw1', userId, 'Gateway test', g.hash, g.prefix);
+    // Default: deterministic mock behind the deepseek slot.
+    setRouterOverrides({ adapters: { deepseek: new MockAdapter({ name: 'deepseek' }, { content: 'mock reply', inputTokens: 10, outputTokens: 5 }) } });
   });
+
+  const chat = (payload, key = apiKey, extraHeaders = {}) => app.inject({
+    method: 'POST', url: '/v1/chat/completions',
+    headers: { authorization: `Bearer ${key}`, ...extraHeaders },
+    payload,
+  });
+
+  // The limiter is process-global: reset per test so gateway tests are
+  // hermetic regardless of execution order/count.
+  const { beforeEach } = require('node:test');
+  beforeEach(() => limiter.resetForTests());
 
   it('rejects missing/revoked keys with 401 OpenAI-shaped error', async () => {
     const r = await app.inject({ method: 'GET', url: '/v1/models' });
     assert.equal(r.statusCode, 401);
     assert.equal(r.json().error.code, 'invalid_api_key');
+    assert.ok(r.headers['x-request-id']);
     const g = generateApiKey();
     db.getDb().prepare("INSERT INTO api_keys (id, user_id, name, key_hash, key_prefix, status) VALUES (?,?,?,?,?,'revoked')")
       .run('key_rev', userId, 'Revoked', g.hash, g.prefix);
@@ -190,58 +204,197 @@ describe('gateway', () => {
     assert.ok(r.json().data.some((m) => m.id === 'deepseek-v4.1-flash'));
   });
 
-  it('chat completions returns honest 503 until Phase 2', async () => {
-    const r = await app.inject({
-      method: 'POST', url: '/v1/chat/completions',
-      headers: { authorization: `Bearer ${apiKey}` },
-      payload: { model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'Hello' }] },
-    });
-    assert.equal(r.statusCode, 503);
-    assert.equal(r.json().error.code, 'provider_not_connected');
+  it('completes chat non-streaming with OpenAI shape + request id', async () => {
+    const r = await chat({ model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'Hello' }] });
+    assert.equal(r.statusCode, 200);
+    const body = r.json();
+    assert.equal(body.object, 'chat.completion');
+    assert.ok(body.id.startsWith('cm_chat_'));
+    assert.equal(body.model, 'deepseek-v4.1-flash');
+    assert.equal(body.choices[0].message.role, 'assistant');
+    assert.equal(body.choices[0].message.content, 'mock reply');
+    assert.deepEqual(body.usage, { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
+    assert.ok(r.headers['x-request-id']);
+    assert.equal(body.error, undefined);
   });
 
-  it('404s unknown model, 400s bad body', async () => {
-    const nf = await app.inject({
-      method: 'POST', url: '/v1/chat/completions', headers: { authorization: `Bearer ${apiKey}` },
-      payload: { model: 'nope-1', messages: [{ role: 'user', content: 'Hi' }] },
-    });
+  it('reuses a valid client X-Request-ID, sanitizes a malicious one', async () => {
+    const good = await chat({ model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'Hi' }] }, apiKey, { 'x-request-id': 'client-123_ABC' });
+    assert.equal(good.headers['x-request-id'], 'client-123_ABC');
+    assert.equal(good.json().error, undefined);
+    const bad = await chat({ model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'Hi' }] }, apiKey, { 'x-request-id': 'evil\nHeader: injected' });
+    assert.match(bad.headers['x-request-id'], /^cm_req_[0-9a-f]+$/);
+  });
+
+  it('streams SSE chunks ending in [DONE]', async () => {
+    const r = await chat({ model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'Hi' }], stream: true });
+    assert.equal(r.statusCode, 200);
+    assert.match(r.headers['content-type'], /text\/event-stream/);
+    assert.ok(r.body.includes('data: [DONE]'));
+    assert.ok(r.body.includes('chat.completion.chunk'));
+    assert.ok(r.body.includes('"delta":{"role":"assistant"}'));
+  });
+
+  it('404s unknown model with param + request_id', async () => {
+    const nf = await chat({ model: 'nope-1', messages: [{ role: 'user', content: 'Hi' }] });
     assert.equal(nf.statusCode, 404);
     assert.equal(nf.json().error.code, 'model_not_found');
-    const bad = await app.inject({
-      method: 'POST', url: '/v1/chat/completions', headers: { authorization: `Bearer ${apiKey}` },
-      payload: { model: 'deepseek-v4.1-flash', messages: [] },
-    });
-    assert.equal(bad.statusCode, 400);
+    assert.equal(nf.json().error.param, 'model');
+    assert.ok(nf.json().error.request_id);
   });
 
-  it('enforces rate limits with 429', async () => {
+  it('validates: roles, temperature, max_tokens, stream, sizes, malformed JSON', async () => {
+    const cases = [
+      [{ model: 'deepseek-v4.1-flash', messages: [] }, 400],
+      [{ model: 'deepseek-v4.1-flash', messages: [{ role: 'alien', content: 'x' }] }, 400],
+      [{ model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 42 }] }, 400],
+      [{ model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'x' }], temperature: 9 }, 400],
+      [{ model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'x' }], max_tokens: -1 }, 400],
+      [{ model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'x' }], stream: 'yes' }, 400],
+      [{ model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'x' }], top_p: 0 }, 400],
+      [{ messages: [{ role: 'user', content: 'x' }] }, 400],
+      [[], 400],
+    ];
+    for (const [payload, status] of cases) {
+      const r = await chat(payload);
+      assert.equal(r.statusCode, status, JSON.stringify(payload));
+      assert.equal(r.json().error.type, 'invalid_request_error');
+    }
+    const raw = await app.inject({
+      method: 'POST', url: '/v1/chat/completions',
+      headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+      payload: '{not json',
+    });
+    assert.equal(raw.statusCode, 400);
+    assert.equal(raw.json().error.code, 'invalid_request');
+  });
+
+  it('enforces rate limits with 429 + Retry-After', async () => {
     const d = db.getDb();
     d.prepare("INSERT OR REPLACE INTO plans (name, requests_per_day, tokens_per_day, rpm) VALUES ('rltest', 100000, 100000000, 0)").run();
     d.prepare('UPDATE users SET plan = ? WHERE id = ?').run('rltest', userId);
-    await app.inject({ method: 'POST', url: '/v1/chat/completions', headers: { authorization: `Bearer ${apiKey}` }, payload: { model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'Hi' }] } });
-    const r2 = await app.inject({ method: 'POST', url: '/v1/chat/completions', headers: { authorization: `Bearer ${apiKey}` }, payload: { model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'Hi' }] } });
+    await chat({ model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'Hi' }] });
+    const r2 = await chat({ model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'Hi' }] });
     assert.equal(r2.statusCode, 429);
     assert.equal(r2.json().error.code, 'rate_limit_exceeded');
+    assert.equal(r2.headers['retry-after'], '60');
     d.prepare('UPDATE users SET plan = ? WHERE id = ?').run('free', userId);
   });
 
-  it('enforces daily quota with 403', async () => {
+  it('enforces daily quota with 429 without contacting provider', async () => {
     const d = db.getDb();
     d.prepare("INSERT OR REPLACE INTO plans (name, requests_per_day, tokens_per_day, rpm) VALUES ('q0', 0, 0, 1000)").run();
     d.prepare('UPDATE users SET plan = ? WHERE id = ?').run('q0', userId);
-    const r = await app.inject({ method: 'POST', url: '/v1/chat/completions', headers: { authorization: `Bearer ${apiKey}` }, payload: { model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'Hi' }] } });
-    assert.equal(r.statusCode, 403);
+    const probe = new MockAdapter({ name: 'deepseek' }, { content: 'should-not-happen' });
+    setRouterOverrides({ adapters: { deepseek: probe } });
+    const r = await chat({ model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'Hi' }] });
+    assert.equal(r.statusCode, 429);
     assert.equal(r.json().error.code, 'insufficient_quota');
+    assert.equal(probe.calls.length, 0, 'provider must not be contacted after quota failure');
     d.prepare('UPDATE users SET plan = ? WHERE id = ?').run('free', userId);
+    setRouterOverrides({ adapters: { deepseek: new MockAdapter({ name: 'deepseek' }, { content: 'mock reply', inputTokens: 10, outputTokens: 5 }) } });
   });
 
-  it('playground returns honest 503 (no fake inference)', async () => {
+  it('records usage rows with request ids, tokens, cost', async () => {
+    const d = db.getDb();
+    const before = d.prepare('SELECT COUNT(*) c FROM requests WHERE user_id = ?').get(userId).c;
+    const r = await chat({ model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'meter me' }] }, apiKey, { 'x-request-id': 'meter-1' });
+    assert.equal(r.statusCode, 200);
+    const row = d.prepare('SELECT * FROM requests WHERE request_id = ?').get('meter-1');
+    assert.ok(row, 'usage row keyed by request id');
+    assert.equal(row.input_tokens, 10);
+    assert.equal(row.output_tokens, 5);
+    assert.equal(row.total_tokens, 15);
+    assert.equal(row.status, 'success');
+    assert.equal(row.provider, 'deepseek');
+    assert.ok(d.prepare('SELECT COUNT(*) c FROM requests WHERE user_id = ?').get(userId).c > before);
+  });
+
+  it('provider errors are normalized (401/429/500/timeout/malformed)', async () => {
+    const table = [
+      [new ProviderError('x', { provider: 'deepseek', code: 'provider_authentication_error', httpStatus: 502 }), 502, 'provider_authentication_error'],
+      [new ProviderError('x', { provider: 'deepseek', code: 'provider_rate_limit', httpStatus: 503, retryable: true }), 503, 'provider_rate_limit'],
+      [new ProviderError('x', { provider: 'deepseek', code: 'provider_unavailable', httpStatus: 502, retryable: true }), 503, 'provider_unavailable'],
+      [new ProviderError('x', { provider: 'deepseek', code: 'provider_timeout', httpStatus: 504, retryable: true }), 504, 'provider_timeout'],
+      [new ProviderError('x', { provider: 'deepseek', code: 'provider_invalid_response', httpStatus: 502 }), 502, 'provider_invalid_response'],
+    ];
+    for (const [fail, status, code] of table) {
+      setRouterOverrides({ adapters: { deepseek: new MockAdapter({ name: 'deepseek' }, { fail }) } });
+      const r = await chat({ model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'Hi' }] });
+      assert.equal(r.statusCode, status, code);
+      assert.equal(r.json().error.code, code);
+      assert.ok(r.json().error.request_id, 'request id in error');
+      assert.ok(!JSON.stringify(r.json()).includes('stack'), 'no stack leak');
+    }
+    setRouterOverrides({ adapters: { deepseek: new MockAdapter({ name: 'deepseek' }, { content: 'mock reply', inputTokens: 10, outputTokens: 5 }) } });
+  });
+
+  it('retries transient failure once, then succeeds (2 attempts logged)', async () => {
+    let n = 0;
+    const flaky = new MockAdapter({ name: 'deepseek' });
+    flaky.chatCompletion = async (req) => {
+      flaky.calls.push({ op: 'chat' });
+      if (++n === 1) throw new ProviderError('boom', { provider: 'deepseek', code: 'provider_unavailable', retryable: true });
+      return { content: 'recovered', finishReason: 'stop', inputTokens: 3, outputTokens: 4 };
+    };
+    setRouterOverrides({ adapters: { deepseek: flaky } });
+    const r = await chat({ model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'Hi' }] }, apiKey, { 'x-request-id': 'retry-1' });
+    assert.equal(r.statusCode, 200);
+    assert.equal(r.json().choices[0].message.content, 'recovered');
+    const attempts = db.getDb().prepare('SELECT COUNT(*) c FROM provider_attempts WHERE request_id = ?').get('retry-1').c;
+    assert.equal(attempts, 2);
+    setRouterOverrides({ adapters: { deepseek: new MockAdapter({ name: 'deepseek' }, { content: 'mock reply', inputTokens: 10, outputTokens: 5 }) } });
+  });
+
+  it('falls back on transient failure when registry configures it', async () => {
+    const d = db.getDb();
+    d.prepare("INSERT OR IGNORE INTO models (id, model_id, display_name, provider, enabled, context_window, status) VALUES ('mdl_fb1','fb-primary','FB Primary','deepseek',1,1000,'active')").run();
+    d.prepare("INSERT OR IGNORE INTO models (id, model_id, display_name, provider, enabled, context_window, status) VALUES ('mdl_fb2','fb-backup','FB Backup','deepseek',1,1000,'active')").run();
+    d.prepare('UPDATE models SET fallback_model = ? WHERE model_id = ?').run('fb-backup', 'fb-primary');
+    setRouterOverrides({
+      adapters: {
+        deepseek: new (class extends MockAdapter {
+          async chatCompletion(req) {
+            this.calls.push({ op: 'chat', model: req.model });
+            if (req.model === 'fb-primary') throw new ProviderError('down', { provider: 'deepseek', code: 'provider_unavailable', retryable: true });
+            return { content: 'via fallback', finishReason: 'stop', inputTokens: 1, outputTokens: 2 };
+          }
+        })({ name: 'deepseek' }),
+      },
+    });
+    const r = await chat({ model: 'fb-primary', messages: [{ role: 'user', content: 'Hi' }] }, apiKey, { 'x-request-id': 'fb-1' });
+    assert.equal(r.statusCode, 200);
+    assert.equal(r.json().choices[0].message.content, 'via fallback');
+    const row = d.prepare('SELECT * FROM requests WHERE request_id = ?').get('fb-1');
+    assert.match(row.provider, /fallback/);
+    d.prepare('DELETE FROM models WHERE model_id IN (?,?)').run('fb-primary', 'fb-backup');
+    setRouterOverrides({ adapters: { deepseek: new MockAdapter({ name: 'deepseek' }, { content: 'mock reply', inputTokens: 10, outputTokens: 5 }) } });
+  });
+
+  it('does NOT fall back on client errors', async () => {
+    const probe = new MockAdapter({ name: 'deepseek' }, { content: 'x' });
+    setRouterOverrides({ adapters: { deepseek: probe } });
+    const r = await chat({ model: 'deepseek-v4.1-flash', messages: [] });
+    assert.equal(r.statusCode, 400);
+    assert.equal(probe.calls.length, 0);
+  });
+
+  it('streaming provider failure arrives as error event + DONE', async () => {
+    setRouterOverrides({ adapters: { deepseek: new MockAdapter({ name: 'deepseek' }, { fail: new ProviderError('mid', { provider: 'deepseek', code: 'provider_unavailable' }) }) } });
+    const r = await chat({ model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'Hi' }], stream: true });
+    assert.equal(r.statusCode, 200);
+    assert.ok(r.body.includes('finish_reason":"error') || r.body.includes('"finish_reason": "error') || r.body.includes('provider_unavailable'));
+    assert.ok(r.body.includes('data: [DONE]'));
+    setRouterOverrides({ adapters: { deepseek: new MockAdapter({ name: 'deepseek' }, { content: 'mock reply', inputTokens: 10, outputTokens: 5 }) } });
+  });
+
+  it('playground runs the same pipeline (no API key in browser)', async () => {
     const r = await app.inject({
       method: 'POST', url: '/api/playground', headers: { cookie: sessionCookie, 'x-csrf-token': csrf },
       payload: { model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'Hi' }] },
     });
-    assert.equal(r.statusCode, 503);
-    assert.equal(r.json().error.code, 'provider_not_connected');
+    assert.equal(r.statusCode, 200);
+    assert.equal(r.json().choices[0].message.content, 'mock reply');
   });
 });
 
@@ -260,18 +413,49 @@ describe('platform', () => {
   it('provider adapters expose interface and refuse without connection', async () => {
     const providers = db.listProviders();
     assert.ok(providers.some((p) => p.name === 'deepseek'));
-    for (const p of providers) {
-      const a = new ProviderAdapter(p);
-      assert.equal(typeof a.chatCompletion, 'function');
-      assert.equal(typeof a.streamChatCompletion, 'function');
-      assert.equal(typeof a.getModels, 'function');
-      await assert.rejects(a.chatCompletion({}), (e) => e instanceof ProviderNotConnectedError);
-    }
+    // Base adapter refuses on all ops when not connected.
+    const bare = new ProviderAdapter({ name: 'deepseek', enabled: true, status: 'not_connected' });
+    await assert.rejects(bare.chatCompletion({}), (e) => e instanceof ProviderNotConnectedError);
+    await assert.rejects(bare.streamChatCompletion({}), (e) => e instanceof ProviderNotConnectedError);
+    await assert.rejects(bare.getModels(), (e) => e instanceof ProviderNotConnectedError);
+    // DeepSeek adapter without credentials reports not_configured, never connected.
+    const unconfigured = new DeepSeekAdapter({ deepseek: { apiKey: '', baseUrl: 'https://api.deepseek.com', timeoutMs: 1000 } }, { name: 'deepseek', enabled: true });
+    assert.equal(unconfigured.connected, false);
+    assert.equal(unconfigured.status, 'not_configured');
+    await assert.rejects(unconfigured.chatCompletion({}), (e) => e instanceof ProviderNotConnectedError);
     const router = new Router(
       [{ id: 'm1', provider: 'deepseek', enabled: true }],
       { deepseek: new ProviderAdapter({ name: 'deepseek', enabled: true, status: 'not_connected' }) });
     assert.equal(router.resolve('m1').error, 'provider_not_connected');
     assert.equal(router.resolve('nope').error, 'model_not_found');
+  });
+
+  it('deepseek adapter normalizes upstream failures without leaking secrets', async () => {
+    const realFetch = global.fetch;
+    try {
+      // Upstream 401 → provider_authentication_error, no key in message.
+      global.fetch = async () => new Response('{"error":{"message":"bad key"}}', { status: 401 });
+      const a = new DeepSeekAdapter({ deepseek: { apiKey: 'sk-test-secret-xyz', baseUrl: 'https://api.deepseek.com', timeoutMs: 5000 } }, { name: 'deepseek', enabled: true, status: 'connected' });
+      await assert.rejects(a.chatCompletion({ model: 'deepseek-chat', messages: [{ role: 'user', content: 'hi' }] }),
+        (e) => e.code === 'provider_authentication_error' && !String(e.message).includes('sk-test-secret-xyz'));
+      // Upstream 500 → retryable provider_unavailable.
+      global.fetch = async () => new Response('oops', { status: 500 });
+      await assert.rejects(a.chatCompletion({ model: 'deepseek-chat', messages: [{ role: 'user', content: 'hi' }] }),
+        (e) => e.code === 'provider_unavailable' && e.retryable === true);
+      // Malformed JSON → provider_invalid_response.
+      global.fetch = async () => new Response('not json{{{', { status: 200 });
+      await assert.rejects(a.chatCompletion({ model: 'deepseek-chat', messages: [{ role: 'user', content: 'hi' }] }),
+        (e) => e.code === 'provider_invalid_response');
+      // SSE stream parses deltas and terminates.
+      const sse = 'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\ndata: {"choices":[{"delta":{"content":" world"}}]}\n\ndata: [DONE]\n\n';
+      global.fetch = async () => new Response(sse, { status: 200 });
+      const tokens = [];
+      const out = await a.streamChatCompletion({ model: 'deepseek-chat', messages: [{ role: 'user', content: 'hi' }], onToken: async (t) => tokens.push(t) });
+      assert.equal(out.content, 'Hello world');
+      assert.deepEqual(tokens, ['Hello', ' world']);
+    } finally {
+      global.fetch = realFetch;
+    }
   });
 
   it('limits module: per-scope rate and daily quota', async () => {
@@ -293,7 +477,7 @@ describe('platform', () => {
       ['/dashboard/logs', 'API KEY'],
       ['/dashboard/usage', 'USAGE BY MODEL'],
       ['/dashboard/billing', 'CURRENT PLAN'],
-      ['/dashboard/playground', 'not connected yet'],
+      ['/dashboard/playground', 'same gateway pipeline'],
       ['/dashboard/settings', 'PROFILE'],
     ]) {
       const r = await app.inject({ method: 'GET', url, headers: { cookie: sessionCookie } });
@@ -307,21 +491,26 @@ describe('platform', () => {
     assert.match(logs.body, /No requests logged yet/);
   });
 
-  it('public pages + docs render, phase-2 endpoints badged', async () => {
+  it('public pages + docs render, live endpoints unbadged', async () => {
     const home = await app.inject({ method: 'GET', url: '/' });
     assert.equal(home.statusCode, 200);
     assert.match(home.body, /One API/);
     const pricing = await app.inject({ method: 'GET', url: '/pricing' });
     assert.match(pricing.body, /FREE/);
+    const health = await app.inject({ method: 'GET', url: '/health' });
+    assert.equal(health.statusCode, 200);
+    assert.equal(health.json().ok, true);
+    assert.ok(!JSON.stringify(health.json()).match(/sk-|Bearer|api[_-]?key/i), 'no secrets in health');
     const docIdx = await app.inject({ method: 'GET', url: '/docs.json' });
-    const slugs = docIdx.json().pages.map((p) => p.slug);
+    const pages = docIdx.json().pages;
+    const bySlug = Object.fromEntries(pages.map((p) => [p.slug, p]));
     for (const s of ['introduction', 'quickstart', 'authentication', 'models', 'chat-completions', 'streaming', 'api-keys', 'errors', 'rate-limits', 'usage', 'sdk', 'examples']) {
-      assert.ok(slugs.includes(s), `docs missing ${s}`);
+      assert.ok(bySlug[s], `docs missing ${s}`);
       const p = await app.inject({ method: 'GET', url: `/docs/${s}` });
       assert.equal(p.statusCode, 200, s);
     }
-    const cc = await app.inject({ method: 'GET', url: '/docs/chat-completions' });
-    assert.match(cc.body, /Coming in Phase 2/);
+    assert.equal(bySlug['chat-completions'].phase2, false, 'chat docs are live');
+    assert.equal(bySlug['streaming'].phase2, false, 'streaming docs are live');
     const no = await app.inject({ method: 'GET', url: '/docs/nope' });
     assert.equal(no.statusCode, 404);
   });
@@ -345,12 +534,15 @@ describe('platform', () => {
     assert.ok(!prov.body.includes('sk-'), 'no secrets in health output');
   });
 
-  it('database schema has Phase-1 entities, indexes, FKs', async () => {
+  it('database schema has Phase-2 entities, indexes, FKs', async () => {
     const d = db.getDb();
     const tables = d.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name);
-    for (const t of ['users', 'api_keys', 'requests', 'plans', 'sessions', 'models', 'providers', 'subscriptions', 'audit_logs']) {
+    for (const t of ['users', 'api_keys', 'requests', 'plans', 'sessions', 'models', 'providers', 'subscriptions', 'audit_logs', 'provider_attempts']) {
       assert.ok(tables.includes(t), `missing table ${t}`);
     }
+    const reqCols = d.prepare('PRAGMA table_info(requests)').all().map((c) => c.name);
+    assert.ok(reqCols.includes('request_id'), 'requests.request_id migrated');
+    assert.ok(reqCols.includes('est_cost'), 'requests.est_cost migrated');
     assert.equal(d.pragma('foreign_key_list(api_keys)').length > 0, true);
     const idx = d.prepare("SELECT name FROM sqlite_master WHERE type='index'").all().map((r) => r.name);
     assert.ok(idx.some((n) => n.includes('api_keys')));

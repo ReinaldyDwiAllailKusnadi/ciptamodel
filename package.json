@@ -1,0 +1,22 @@
+{
+  "name": "ciptamodel",
+  "version": "0.1.0",
+  "description": "CiptaModel — Unified AI API Gateway (OpenAI-compatible). One API key, multiple AI models.",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test tests/",
+    "lint": "node --check src/server.js && node --check src/db.js && node --check src/providers.js && node --check src/config.js && node --check src/limits.js",
+    "init-db": "node -e \"require('./src/db').connect();console.log('database ready')\""
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@fastify/cookie": "^9.4.0",
+    "@fastify/formbody": "^7.4.0",
+    "bcryptjs": "^3.0.2",
+    "better-sqlite3": "^12.2.0",
+    "fastify": "^5.3.1"
+  }
+}

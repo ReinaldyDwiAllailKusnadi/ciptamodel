@@ -234,28 +234,40 @@ function userStats(userId) {
 // ============================================================
 const CSS = '/styles.css';
 const DASH_NAV = [
-  ['Dashboard', '/dashboard', null],
+  ['Dashboard', '/dashboard', null, '◧'],
   ['AI GATEWAY', null, 'sec'],
-  ['Playground', '/dashboard/playground', null],
-  ['API Keys', '/dashboard/api-keys', null],
-  ['Models', '/dashboard/models', null],
-  ['Logs', '/dashboard/logs', null],
+  ['Playground', '/dashboard/playground', null, '▷'],
+  ['API Keys', '/dashboard/api-keys', null, '⚿'],
+  ['Models', '/dashboard/models', null, '⧉'],
+  ['Logs', '/dashboard/logs', null, '☰'],
   ['DEVELOPER', null, 'sec'],
-  ['Documentation', '/docs', null],
-  ['SDK', '/sdk', null],
-  ['Examples', '/examples', null],
+  ['Documentation', '/docs', null, '❐'],
+  ['SDK', '/sdk', null, '⌁'],
+  ['Examples', '/examples', null, '✎'],
   ['BILLING', null, 'sec'],
-  ['Plan', '/dashboard/billing', null],
-  ['Usage', '/dashboard/usage', null],
+  ['Plan', '/dashboard/billing', null, '⬣'],
+  ['Usage', '/dashboard/usage', null, '▦'],
   ['ACCOUNT', null, 'sec'],
-  ['Settings', '/dashboard/settings', null],
+  ['Settings', '/dashboard/settings', null, '⚙'],
 ];
+
+// Shared polish helpers (pure markup, no behavior change).
+function pageHead(title, sub, actions) {
+  return `<div class="pagehead"><div><h1>${esc(title)}</h1>${sub ? `<p class="sub">${sub}</p>` : ''}</div>`
+    + (actions ? `<div class="page-actions">${actions}</div>` : '') + `</div>`;
+}
+function emptyState(icon, title, what, next) {
+  return `<div class="empty" role="status"><div class="empty-ic" aria-hidden="true">${icon}</div>`
+    + `<strong>${esc(title)}</strong><p><strong>What happened:</strong> ${what}</p>`
+    + (next ? `<p><strong>What next:</strong> ${next}</p>` : '')
+    + `</div>`;
+}
 
 function layout({ title, user, active, body, dash = true }) {
   if (!dash) return publicShell({ title, body: `<div class="wrap section tight">${body}</div>` });
-  const links = DASH_NAV.map(([label, href, kind]) => kind === 'sec'
+  const links = DASH_NAV.map(([label, href, kind, icon]) => kind === 'sec'
     ? `<div class="navsec">${label}</div>`
-    : `<a href="${href}" class="${active === label ? 'active' : ''}"${active === label ? ' aria-current="page"' : ''}>${label}</a>`).join('');
+    : `<a href="${href}" class="${active === label ? 'active' : ''}"${active === label ? ' aria-current="page"' : ''}><span aria-hidden="true" style="width:18px;text-align:center">${icon || '·'}</span>${label}</a>`).join('');
   const side = `<aside class="sidebar" aria-label="Dashboard navigation"><div class="brand"><span class="mark">C<i>.</i></span>CiptaModel</div>
        <nav class="nav">${links}</nav>
        <div class="side-foot">${user ? `${esc(user.email)}<br><a href="/logout" style="color:#93c5fd">Sign out</a>` : '<a href="/login" style="color:#93c5fd">Sign in</a>'}</div></aside>`;
@@ -266,8 +278,10 @@ function layout({ title, user, active, body, dash = true }) {
 <a class="skip" href="#main">Skip to content</a>
 <div class="shell">${side}
 <div class="main"><div class="topbar"><button class="menu-btn" data-action="menu" aria-label="Toggle navigation">☰</button>
+<button class="icon-btn" data-action="collapse" aria-label="Collapse sidebar" aria-expanded="true" title="Collapse sidebar">⇤</button>
 <strong>${esc(title)}</strong><span class="who"><span class="dot" aria-hidden="true"></span><span>Gateway <code class="inline">/v1</code> · OpenAI-compatible</span>${user ? `<span class="badge info">${esc(user.plan || 'free')}</span>` : ''}</span></div>
 <main class="content" id="main">${body}</main></div></div>
+<div id="toasts" aria-live="polite" aria-atomic="true"></div>
 <script src="/app.js" defer></script></body></html>`;
 }
 
@@ -293,9 +307,12 @@ function publicShell({ title, body, desc }) {
 <script src="/app.js" defer></script></body></html>`;
 }
 
-function errPage(status, heading, msg) {
+function errPage(status, heading, msg, opts = {}) {
+  const cause = opts.cause ? `<p><strong>What happened:</strong> ${esc(opts.cause)}</p>` : '';
+  const action = opts.action ? `<p><strong>What to do next:</strong> ${opts.action}</p>` : '';
   return publicShell({ title: heading, body: `<div class="wrap"><div class="err"><div>
 <p class="code">ERROR ${status}</p><h1>${esc(heading)}</h1><p>${esc(msg)}</p>
+${cause}${action}
 <p><a class="btn" href="/">Back home</a> &nbsp; <a class="btn ghost" href="/docs">Read the docs</a></p></div></div></div>` });
 }
 
@@ -306,15 +323,20 @@ function phase2Badge() {
 const views = {
   landing(providers, plans) {
     const provs = providers || [];
+    const regModels = listModelsSafe();
+    const enabledProvs = provs.filter((p) => p.enabled).length;
+    const liveNote = `${regModels.length} models in registry · ${enabledProvs} of ${provs.length} providers enabled`;
     const chips = provs.map((pr) =>
       `<span class="pchip${pr.enabled ? ' on' : ''}">${esc(pr.name)} · ${pr.enabled ? 'enabled' : 'disabled'}</span>`).join('');
+    const provUp = (provs.find((p) => p.enabled) || {}).name || 'pending credentials';
     const route = `<div class="route" aria-label="Gateway routing diagram">
 <div class="route-flow">
 <div class="rnode"><div class="rl">CLIENT</div><div class="rv mono">your app</div></div><span class="rarrow" aria-hidden="true">→</span>
 <div class="rnode lit"><div class="rl">GATEWAY</div><div class="rv mono">ciptamodel /v1</div></div><span class="rarrow" aria-hidden="true">→</span>
-<div class="rnode"><div class="rl">ROUTER</div><div class="rv mono">stable model IDs</div></div>
+<div class="rnode"><div class="rl">ROUTER</div><div class="rv mono">stable model IDs</div></div><span class="rarrow" aria-hidden="true">→</span>
+<div class="rnode"><div class="rl">PROVIDER</div><div class="rv mono">${esc(provUp)}</div></div>
 </div>
-<div class="route-provs"><span class="route-cap">PROVIDERS</span>${chips || '<span class="pchip">—</span>'}</div></div>`;
+<div class="route-provs"><span class="route-cap">REGISTRY</span>${chips || '<span class="pchip">—</span>'}</div></div>`;
     const planStrip = (plans || []).map((p) =>
       `<div class="plan${p.name === 'free' ? ' hot' : ''}"><h3>${esc(String(p.name).toUpperCase())}</h3>
 <div class="price">${p.name === 'free' ? '$0' : 'Soon'}</div>
@@ -324,10 +346,10 @@ const views = {
     return publicShell({ title: 'One API. Multiple AI Models', body: `
 <section class="hero-band"><div class="wrap hero-grid">
 <div><p class="eyebrow">OPENAI-COMPATIBLE AI GATEWAY</p>
-<h1>One API.<br>Multiple AI Models.</h1>
-<p class="hero-sub">CiptaModel gives developers a single OpenAI-compatible interface for many AI models. One <code class="inline">sk-cm-…</code> key, one base URL — swap providers without rewriting your integration.</p>
-<div class="hero-cta"><a class="btn lg" href="/register">Start building</a><a class="btn light lg" href="/docs">Read documentation</a></div>
-<div class="hero-meta"><span><span class="dot"></span>OpenAI-compatible</span><span><span class="dot"></span>Streaming (SSE)</span><span><span class="dot"></span>X-Request-ID tracing</span></div></div>
+<h1>One API.<br>Every model your app needs.</h1>
+<p class="hero-sub">CiptaModel is a unified gateway for AI inference: one One <code class="inline">sk-cm-…</code> key and one base URL give your app OpenAI-compatible access to multiple providers — with routing, retries, and per-request observability built in.</p>
+<div class="hero-cta"><a class="btn lg" href="/register">Get an API key</a><a class="btn light lg" href="/docs/quickstart">Quickstart in 5 min</a></div>
+<div class="hero-meta"><span><span class="dot"></span>OpenAI-compatible</span><span><span class="dot"></span>Streaming (SSE)</span><span><span class="dot"></span>X-Request-ID tracing</span><span><span class="dot"></span>${liveNote}</span></div></div>
 <div class="term" role="img" aria-label="Example API request through the CiptaModel gateway">
 <div class="term-bar"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span><span class="term-title">POST /v1/chat/completions</span><span class="term-live"><i></i>EXAMPLE</span></div>
 <pre class="term-body"><span class="c"># one base URL, one key — any OpenAI client</span>
@@ -369,11 +391,12 @@ ${(listModelsSafe()).map((m) => `<tr><td><strong>${esc(m.display_name)}</strong>
 <div class="section-head"><p class="kicker">DEVELOPER EXPERIENCE</p><h2>Change the base URL. Keep your integration.</h2>
 <p>CiptaModel speaks the OpenAI API — every OpenAI SDK works unmodified, including streaming, tool calls, and standard error shapes.</p></div>
 <div class="grid c2">
-<div><pre>from openai import OpenAI
+<div><pre>import os
+from openai import OpenAI
 
 client = OpenAI(
     base_url="${esc(config.publicApiBaseUrl)}",
-    api_key="sk-cm-live-...",
+    api_key=os.environ["CIPTAMODEL_API_KEY"],
 )
 r = client.chat.completions.create(
     model="deepseek-v4.1-flash",
@@ -468,98 +491,238 @@ ${error ? `<div class="alert bad" role="alert">${esc(error)}</div>` : ''}
   },
 
   dashboard(user, s, providers) {
-    const stat = (l, v, sub) => `<div class="stat-cell"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${sub}</div></div>`;
     const badgeFor = (st) => st === 'connected' || st === 'configured'
       ? `<span class="badge ok">${esc(st)}</span>`
       : (st === 'not_configured' || st === 'pending_credentials' ? `<span class="badge warn">${esc(st)}</span>` : `<span class="badge dim">${esc(st)}</span>`);
-    const provRows = providers.map((p) =>
-      `<tr><td><strong>${esc(p.display_name)}</strong><span class="sub mono">${esc(p.name)}</span></td>
-       <td>${p.enabled ? '<span class="badge info">Enabled</span>' : '<span class="badge dim">Disabled</span>'}</td>
-       <td>${badgeFor(p.status)}</td></tr>`).join('');
-    const recent = (s.recent || []).map((r) => `<tr><td class="mono"><small>${esc(r.created_at)}</small></td>
-<td class="mono">${esc(r.model_id)}</td><td>${r.total_tokens}</td>
-<td>${r.status === 'success' ? '<span class="badge ok">ok</span>' : `<span class="badge bad">${esc(r.error_code || r.status)}</span>`}</td></tr>`).join('');
+    const enabledModels = listModelsSafe().filter((m) => m.enabled);
+    const connectedProvs = providers.filter((pr) => pr.enabled && (pr.status === 'configured' || pr.status === 'connected')).length;
+    const total = s.total ?? 0;
+    const checklist = total === 0 ? `<div class="card" style="margin-bottom:var(--s4)"><div class="panel-head"><h3>GET STARTED — 4 STEPS TO YOUR FIRST REQUEST</h3></div>
+<ul class="checklist"><li class="todo"><strong>Create an API key</strong> — <a href="/dashboard/api-keys">API Keys →</a> (shown once, hashed at rest)</li>
+<li class="todo"><strong>Pick a model</strong> — <a href="/dashboard/models">Models →</a> (only Available models accept traffic)</li>
+<li class="todo"><strong>Send a request</strong> — <a href="/docs/quickstart">Quickstart →</a> or try the <a href="/dashboard/playground">Playground →</a></li>
+<li class="todo"><strong>Inspect it</strong> — every call lands in <a href="/dashboard/logs">Logs →</a> with tokens, latency, and status</li></ul></div>` : '';
+    // Trend: today vs yesterday (requests table; honest "new account" label when empty).
+    let todayN = s.today ?? 0; let yestN = 0;
+    try {
+      const db = getDb();
+      const d = new Date(); d.setDate(d.getDate() - 1);
+      const y = d.toISOString().slice(0, 10);
+      yestN = db.prepare("SELECT COUNT(*) c FROM requests WHERE user_id = ? AND date(created_at) = ?").get(user.id, y)?.c ?? 0;
+    } catch { /* trend optional */ }
+    const pct = yestN > 0 ? Math.round(((todayN - yestN) / yestN) * 100) : null;
+    const delta = (label) => {
+      if (total === 0) return `<span class="delta flat">${esc(label)}</span>`;
+      if (pct === null) return `<span class="delta flat">▲ — (first day tracked)</span>`;
+      const cls = pct >= 0 ? 'up' : 'down';
+      return `<span class="delta ${cls}">${pct >= 0 ? '▲' : '▼'} ${Math.abs(pct)}% vs yesterday</span>`;
+    };
+    const kpi = (l, v, f) => `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div><div class="f">${f}</div></div>`;
+    const latVal = typeof s.p50 === 'number' ? `${s.p50} ms` : '—';
+    // 14-day bars, oldest→newest, server-rendered.
+    const asc = [...(s.daily || [])].reverse().slice(-14);
+    const maxN = Math.max(1, ...asc.map((r) => r.n));
+    const bars = asc.map((r) => {
+      const h = Math.max(3, Math.round((r.n / maxN) * 124));
+      return `<div class="bar${r.n ? '' : ' zero'}" style="height:${h}px" title="${esc(r.d)}: ${r.n} req, ${Number(r.t).toLocaleString()} tok" role="img" aria-label="${esc(r.d)} ${r.n} requests"></div>`;
+    }).join('');
+    const barsX = asc.map((r) => `<span>${esc(String(r.d || '').slice(5))}</span>`).join('');
+    const maxT = Math.max(1, ...((s.byModel || []).map((r) => Number(r.t) || 0)));
+    const topModels = (s.byModel || []).slice(0, 5).map((r) =>
+      `<div class="hbar"><span class="k">${esc(r.model_id)}</span><span class="track"><span class="fill" style="display:block;width:${Math.max(2, Math.round((Number(r.t) / maxT) * 100))}%"></span></span><span class="n">${r.n} req · ${Number(r.t).toLocaleString()} tok</span></div>`).join('');
+    const tl = (s.recent || []).slice(0, 6).map((r) => {
+      const ok = r.status === 'success';
+      return `<li class="tl-item"><span class="tl-dot ${ok ? 'ok' : 'err'}" aria-hidden="true"></span>`
+        + `<div><span class="mono">${esc(r.model_id)}</span> · ${Number(r.total_tokens).toLocaleString()} tok · ${r.latency_ms} ms · `
+        + (ok ? '<span class="badge ok">ok</span>' : `<span class="badge bad">${esc(r.error_code || r.status)}</span>`)
+        + `<br><span class="tt">${esc(r.created_at)}${r.key_name ? ` · ${esc(r.key_name)}` : ''}</span></div></li>`;
+    }).join('');
+    const healthRows = providers.map((p) => {
+      const live = p.enabled && (p.status === 'configured' || p.status === 'connected');
+      return `<div class="health-row"><span class="pulse ${live ? 'on' : 'off'}" aria-hidden="true"></span>`
+        + `<span><strong>${esc(p.display_name)}</strong> <span class="muted mono" style="font-size:12px">${esc(p.name)}</span></span>`
+        + `<span style="margin-left:auto;display:flex;gap:6px;align-items:center">${p.enabled ? '<span class="badge info">Enabled</span>' : '<span class="badge dim">Disabled</span>'}${badgeFor(p.status)}</span></div>`;
+    }).join('');
+    const head = pageHead('Dashboard',
+      `Plan <span class="badge info">${esc(user.plan)}</span> · Gateway <code class="inline">${esc(config.publicApiBaseUrl)}</code> · ${enabledModels.length} model${enabledModels.length === 1 ? '' : 's'} available · ${connectedProvs} of ${providers.length} providers connected`,
+      `<a class="btn ghost sm" href="/dashboard/playground">Open Playground</a><a class="btn sm" href="/dashboard/api-keys">+ New API key</a>`);
     return layout({ title: 'Dashboard', user, active: 'Dashboard', body: `
-<h1>Dashboard</h1><p class="sub">Plan <span class="badge info">${esc(user.plan)}</span> · Gateway <code class="inline">${esc(config.publicApiBaseUrl)}</code></p>
-<div class="stats">
-${stat('Total requests', s.total ?? 0, 'logged gateway calls')}
-${stat('Total tokens', Number(s.tokens ?? 0).toLocaleString(), 'input + output')}
-${stat('Active API keys', s.activeKeys ?? 0, '<a href="/dashboard/api-keys">manage keys →</a>')}
-${stat('Error rate', (s.errRate ?? '0%'), 'failed / total · p50 ' + (s.p50 ?? '—') + ' ms')}
+${head}
+${checklist}
+<div class="kpis" aria-label="Key metrics">
+${kpi('Total requests', Number(total).toLocaleString(), delta() + `<span>${Number(s.tokens ?? 0).toLocaleString()} tokens total</span>`)}
+${kpi('Today', Number(todayN).toLocaleString(), delta() + `<span>${s.month ?? 0} this month</span>`)}
+${kpi('Active API keys', s.activeKeys ?? 0, `<span><a href="/dashboard/api-keys">manage keys →</a></span>`)}
+${kpi('Error rate', (s.errRate ?? '0%'), `<span>p50 ${latVal}</span>`)}
+</div>
+<div class="quick" aria-label="Quick actions">
+<a class="qa" href="/dashboard/playground"><span class="qi" aria-hidden="true">▷</span><span><span class="t">Test in Playground</span><span class="d">Same gateway pipeline, no key in browser</span></span></a>
+<a class="qa" href="/dashboard/api-keys"><span class="qi" aria-hidden="true">⚿</span><span><span class="t">Create API key</span><span class="d">One key for Cursor, Cline, Open WebUI</span></span></a>
+<a class="qa" href="/docs/quickstart"><span class="qi" aria-hidden="true">❐</span><span><span class="t">Quickstart</span><span class="d">First request in 5 minutes</span></span></a>
+<a class="qa" href="/dashboard/logs"><span class="qi" aria-hidden="true">☰</span><span><span class="t">Inspect logs</span><span class="d">Tokens, latency, status per call</span></span></a>
 </div>
 <div class="grid c2">
-<div class="card"><div class="panel-head"><h3>SYSTEM STATUS — PROVIDERS</h3></div>
-<div class="table-scroll"><table style="min-width:0"><tr><th scope="col">PROVIDER</th><th scope="col">REGISTRY</th><th scope="col">CONNECTION</th></tr>${provRows}</table></div>
-<p><small class="muted">Live DeepSeek adapter when <code class="inline">DEEPSEEK_API_KEY</code> is configured server-side, otherwise honest <code class="inline">503 provider_not_connected</code> — statuses flip without API changes.</small></p></div>
-<div class="card"><div class="panel-head"><h3>RECENT REQUESTS</h3><span class="spacer" style="flex:1"></span><a href="/dashboard/logs"><small>All logs →</small></a></div>
-${recent ? `<div class="table-scroll"><table><tr><th scope="col">TIME</th><th scope="col">MODEL</th><th scope="col">TOKENS</th><th scope="col">STATUS</th></tr>${recent}</table></div>`
-  : '<div class="empty"><strong>No requests yet</strong>Logs will appear here once the gateway is used.</div>'}</div>
+<div class="card"><div class="panel-head"><h3>REQUESTS — LAST 14 DAYS</h3><span class="spacer" style="flex:1"></span><a href="/dashboard/usage"><small>Usage →</small></a></div>
+${bars ? `<div class="bars" aria-hidden="true">${bars}</div><div class="bars-x" aria-hidden="true">${barsX}</div>
+<div class="legend"><span><i style="background:#2563EB"></i>requests/day</span><span>peak ${maxN}/day · ${s.month ?? 0} this month</span></div>`
+  : emptyState('▦', 'No usage yet', 'this account has not called the gateway.', '<a href="/dashboard/api-keys">create an API key</a>, then follow the <a href="/docs/quickstart">quickstart</a>')}</div>
+<div class="card"><div class="panel-head"><h3>SYSTEM STATUS — PROVIDERS</h3><span class="spacer" style="flex:1"></span><a href="/healthz"><small>API status</small></a></div>
+${healthRows}
+<p class="table-hint">DeepSeek goes live when <code class="inline">DEEPSEEK_API_KEY</code> is set server-side; otherwise chat returns <code class="inline">503 provider_not_connected</code>.</p></div>
+</div><br>
+<div class="grid c2">
+<div class="card"><div class="panel-head"><h3>TOP MODELS</h3><span class="spacer" style="flex:1"></span><a href="/dashboard/usage"><small>Usage →</small></a></div>
+${topModels || emptyState('⧉', 'No usage yet', 'per-model totals appear after your first request.', null)}</div>
+<div class="card"><div class="panel-head"><h3>RECENT ACTIVITY</h3><span class="spacer" style="flex:1"></span><a href="/dashboard/logs"><small>All logs →</small></a></div>
+${tl ? `<ul class="tl">${tl}</ul>`
+  : emptyState('☰', 'No requests yet', 'this account has not called the gateway.', '<a href="/dashboard/api-keys">create an API key</a>, then follow the <a href="/docs/quickstart">quickstart</a> — entries appear here automatically.')}</div>
 </div>` });
   },
 
   keys(user, keys, usageByKey, newSecret) {
-    const rows = keys.map((k) => {
+    const created = keys.length ? esc((keys[0].created_at || '').slice(0, 10)) : null;
+    const active = keys.filter((k) => k.status === 'active').length;
+    const cards = keys.map((k) => {
       const u = (usageByKey || {})[k.id] || { n: 0, t: 0 };
-      return `<tr>
-<td><strong>${esc(k.name)}</strong><span class="sub">${esc(shortId(k.id))} · created ${esc((k.created_at || '').slice(0, 10))}</span></td>
-<td class="mono">${esc(maskKey(k.key_prefix))}</td>
-<td>${Number(u.n).toLocaleString()} req<span class="sub">${Number(u.t).toLocaleString()} tok</span></td>
-<td>${timeAgo(k.last_used_at)}</td>
-<td>${k.status === 'active' ? '<span class="badge ok">Active</span>' : '<span class="badge bad">Revoked</span>'}</td>
-<td>${k.status === 'active'
-  ? `<form method="post" action="/dashboard/api-keys/${k.id}/revoke" style="display:inline" data-confirm="Revoke this key? Integrations using it will stop working."><input type="hidden" name="_csrf" value="${esc(user.csrf || '')}"><button class="btn danger sm">Revoke</button></form>`
-  : `<form method="post" action="/dashboard/api-keys/${k.id}/delete" style="display:inline" data-confirm="Permanently delete this key record?"><input type="hidden" name="_csrf" value="${esc(user.csrf || '')}"><button class="btn ghost sm">Delete</button></form>`}</td>
-</tr>`;
+      const revDate = k.revoked_at ? esc(String(k.revoked_at).slice(0, 10)) : null;
+      const stale = k.status === 'active' && !k.last_used_at;
+      return `<div class="keycard${k.status === 'active' ? '' : ' rev'}">
+<div class="keycard-top"><strong>${esc(k.name)}</strong>
+${k.status === 'active' ? '<span class="badge ok">Active</span>' : '<span class="badge bad">Revoked</span>'}
+${stale ? '<span class="badge warn">Never used</span>' : ''}
+${revDate ? `<span class="muted" style="font-size:12px">revoked ${revDate}</span>` : ''}
+<span class="keycard-actions">${k.status === 'active'
+    ? `<button class="btn ghost sm" data-action="copy" data-copy="${esc(maskKey(k.key_prefix))}" data-label="Copy" aria-label="Copy masked key for ${esc(k.name)}">Copy</button>`
+      + `<form method="post" action="/dashboard/api-keys/${k.id}/revoke" style="display:inline" data-confirm="Revoke this key? Integrations using it stop working immediately with 401."><input type="hidden" name="_csrf" value="${esc(user.csrf || '')}"><button class="btn danger sm">Revoke</button></form>`
+    : `<form method="post" action="/dashboard/api-keys/${k.id}/delete" style="display:inline" data-confirm="Permanently delete this key? Usage history stays in logs; the key itself can never be recovered."><input type="hidden" name="_csrf" value="${esc(user.csrf || '')}"><button class="btn ghost sm">Delete</button></form>`}</span></div>
+<div class="keycard-meta">
+<div><div class="k">Masked key</div><div class="val">${esc(maskKey(k.key_prefix))}</div></div>
+<div><div class="k">Usage</div><div class="val">${Number(u.n).toLocaleString()} req · ${Number(u.t).toLocaleString()} tok</div></div>
+<div><div class="k">Last used</div><div class="val">${timeAgo(k.last_used_at)}${stale ? ' — unused so far' : ''}</div></div>
+<div><div class="k">Created</div><div class="val">${esc((k.created_at || '').slice(0, 10))} · ${esc(shortId(k.id))}</div></div>
+</div></div>`;
     }).join('');
     return layout({ title: 'API Keys', user, active: 'API Keys', body: `
-<h1>API Keys</h1>
-<p class="sub">Create keys for Cursor, Cline, Open WebUI, or any OpenAI-compatible client. Secrets are SHA-256 hashed and shown once.</p>
-${newSecret ? `<div class="alert warn" role="alert"><strong>Copy this key now — it is shown in full only once.</strong> Afterwards only the masked value is visible.</div>
+${pageHead('API Keys',
+  `${keys.length ? `${active} active of ${keys.length} keys${created ? ` · newest created ${created}` : ''} · ` : ''}One key authenticates Cursor, Cline, Open WebUI, or any OpenAI-compatible client. Secrets are SHA-256 hashed at rest and shown in full only once.`)}
+${newSecret ? `<div class="alert warn" role="alert"><strong>Copy this key now — it is shown in full only once.</strong> Store it in a secret manager; afterwards only the masked value is visible and the secret can never be recovered.</div>
 <div class="secret-box"><code>${esc(newSecret)}</code>
-<button class="btn sm" data-action="copy" data-copy="${esc(newSecret)}" data-label="Copy">Copy</button></div><br>` : ''}
-<div class="card"><div class="panel-head"><h3>CREATE KEY</h3></div>
-<form method="post" action="/dashboard/api-keys" class="row" aria-label="Create API key"><input type="hidden" name="_csrf" value="${esc(user.csrf || '')}"><label class="sr" for="keyname">Key name</label><input id="keyname" type="text" name="name" placeholder="Key name, e.g. Cursor Development" required maxlength="80" style="max-width:280px;flex:1"><button class="btn">+ Create new key</button></form></div><br>
-<div class="table-scroll"><table><tr><th scope="col">KEY NAME</th><th scope="col">API KEY</th><th scope="col">USAGE</th><th scope="col">LAST USED</th><th scope="col">STATUS</th><th scope="col">ACTIONS</th></tr>
-${rows || '<tr><td colspan="6"><div class="empty"><strong>No API keys yet.</strong> Create your first key to start using the gateway.</div></td></tr>'}</table></div>
-<p><small class="muted">Secrets can never be recovered after this page. Quotas follow your <a href="/dashboard/billing">plan</a>.</small></p>` });
+<button class="btn sm" data-action="copy" data-copy="${esc(newSecret)}" data-label="Copy">Copy</button></div>
+<p class="field-hint">Next: paste it as <code class="inline">Authorization: Bearer ***</code> against <code class="inline">${esc(config.publicApiBaseUrl)}</code> — see the <a href="/docs/quickstart">quickstart</a>.</p><br>` : ''}
+<div class="callout">⚠ <strong>Security:</strong> treat keys like passwords. Never commit them, never paste them in screenshots or support tickets, and revoke any key you suspect leaked — revocation takes effect immediately (401).</div>
+<div class="card" style="margin-bottom:var(--s4)"><div class="panel-head"><h3>CREATE KEY</h3></div>
+<form method="post" action="/dashboard/api-keys" class="row" aria-label="Create API key"><input type="hidden" name="_csrf" value="${esc(user.csrf || '')}"><label class="sr" for="keyname">Key name</label><input id="keyname" type="text" name="name" placeholder="Key name, e.g. Cursor Development" required maxlength="80" style="max-width:280px;flex:1"><button class="btn">+ Create new key</button></form></div>
+${cards || emptyState('⚿', 'No API keys yet', 'this account has no keys.', 'create your first key above, copy the secret once, then send your first request with the <a href="/docs/quickstart">quickstart</a>.')}
+<p class="table-hint">Revoked keys fail closed with 401. Usage per key is metered under <a href="/dashboard/usage">Usage</a>.</p>` });
   },
 
   modelsPage(user, models, providers) {
     const provName = Object.fromEntries(providers.map((p) => [p.name, p]));
+    const caps = [...new Set((models || []).flatMap((m) => m.capabilities || []))].sort();
     const rows = models.map((m) => {
       const p = provName[m.provider];
       const conn = p ? p.status : 'unknown';
-      return `<tr><td><strong>${esc(m.display_name)}</strong><span class="sub mono">${esc(m.id)}${m.fallback ? ` · fallback → ${esc(m.fallback.model)}` : ''}</span><span class="sub">${esc(m.description || '')}</span></td>
-<td class="mono">${esc(m.provider)}<span class="sub">${esc(conn)}</span></td>
-<td>${Number(m.context_window).toLocaleString()}<span class="sub">max out ${Number(m.max_output_tokens).toLocaleString()}</span></td>
-<td>${(m.capabilities || []).map((c) => `<span class="badge info">${esc(c)}</span>`).join(' ')}</td>
-<td><small class="mono">in $${m.price_input_per_1k}/1K<br>out $${m.price_output_per_1k}/1K</small></td>
-<td>${m.enabled ? '<span class="badge ok">Available</span>' : '<span class="badge bad">Disabled</span>'}</td></tr>`;
+      const connBadge = conn === 'configured' || conn === 'connected' ? '<span class="badge ok">connected</span>'
+        : conn === 'not_configured' || conn === 'pending_credentials' ? '<span class="badge warn">needs credentials</span>'
+        : `<span class="badge dim">${esc(conn)}</span>`;
+      const price = (m.price_input_per_1k || m.price_output_per_1k)
+        ? `<small class="mono">in $${m.price_input_per_1k}/1K<br>out $${m.price_output_per_1k}/1K</small>`
+        : '<small class="muted">included in plan quota</small>';
+      const status = m.enabled ? 'available' : 'disabled';
+      return `<tr data-name="${esc(m.display_name)} ${esc(m.id)} ${esc(m.provider)}" data-caps="${esc((m.capabilities || []).join(' '))}" data-status="${status}" data-ctx="${Number(m.context_window) || 0}">`
+      + `<td><strong>${esc(m.display_name)}</strong><span class="sub mono">${esc(m.id)}${m.fallback ? ` · fallback → ${esc(m.fallback.model)}` : ''}</span><span class="sub">${esc(m.description || '')}</span></td>`
+      + `<td class="mono">${esc(m.provider)}<span class="sub">${esc(conn)}</span></td>`
+      + `<td>${Number(m.context_window).toLocaleString()}<span class="sub">max out ${Number(m.max_output_tokens).toLocaleString()}</span></td>`
+      + `<td>${(m.capabilities || []).map((c) => `<span class="badge info">${esc(c)}</span>`).join(' ')}</td>`
+      + `<td>${price}</td>`
+      + `<td>${m.enabled ? '<span class="badge ok">Available</span>' : '<span class="badge bad">Disabled</span>'}`
+      + `<span class="sub">${m.enabled ? connBadge : '<span class="badge dim">no traffic</span>'}</span></td>`
+      + `<td style="white-space:nowrap"><a class="btn ghost sm" href="/dashboard/playground?model=${esc(encodeURIComponent(m.id))}">Try</a> `
+      + `<button class="btn ghost sm" data-action="copy" data-copy="${esc(m.id)}" data-label="Copy ID" aria-label="Copy model ID ${esc(m.id)}">Copy ID</button></td></tr>`;
     }).join('');
     return layout({ title: 'Models', user, active: 'Models', body: `
-<h1>Models</h1><p class="sub">Registry data — public model IDs stay stable even when upstream providers change. Only enabled models accept traffic.</p>
-<div class="table-scroll"><table><tr><th scope="col">MODEL</th><th scope="col">PROVIDER</th><th scope="col">CONTEXT</th><th scope="col">CAPABILITIES</th><th scope="col">PRICING</th><th scope="col">STATUS</th></tr>
-${rows || '<tr><td colspan="6"><div class="empty"><strong>No models in registry.</strong></div></td></tr>'}</table></div>
-<p><small class="muted">Prices are registry values per 1K tokens; metered billing activates with payments. Disabled providers return honest <code class="inline">503 provider_not_connected</code>.</small></p>` });
+${pageHead('Models',
+  `Registry — ${models.filter((m) => m.enabled).length} of ${models.length} models available · public IDs stay stable when upstream providers change · only Available models accept traffic.`,
+  `<a class="btn ghost sm" href="/docs/models">Registry docs</a>`)}
+<form class="toolbar" id="mtoolbar" aria-label="Search and filter models" onsubmit="return false">
+<div class="grow"><label for="mq">Search</label><input id="mq" type="text" placeholder="Search name, id, provider…" autocomplete="off"></div>
+<div><label for="mcap">Capability</label><select id="mcap"><option value="">All</option>${caps.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select></div>
+<div><label for="mstat">Status</label><select id="mstat"><option value="">All</option><option value="available">Available</option><option value="disabled">Disabled</option></select></div>
+<div><label for="msort">Sort</label><select id="msort"><option value="">Registry order</option><option value="ctx">Context ↓</option><option value="name">Name A–Z</option></select></div>
+</form>
+<p class="count-note" id="modelcount" aria-live="polite">${models.length} of ${models.length} shown</p>
+<div class="table-scroll"><table><tr><th scope="col">MODEL</th><th scope="col">PROVIDER</th><th scope="col">CONTEXT</th><th scope="col">CAPABILITIES</th><th scope="col">PRICING</th><th scope="col">STATUS</th><th scope="col">ACTIONS</th></tr>
+<tbody id="modelrows">${rows || `<tr><td colspan="7">${emptyState('⧉', 'No models in registry', 'the model registry is empty.', 'configure providers server-side to seed models — or contact the operator.')}</td></tr>`}</tbody></table></div>
+<p class="table-hint">Prices are registry values per 1K tokens; metered billing activates with payments. Unconnected providers return <code class="inline">503 provider_not_connected</code> — see <a href="/docs/errors">error contract</a>.</p>` });
   },
 
-  logs(user, rows) {
-    const tr = rows.map((r) => `<tr><td class="mono"><small>${esc(r.created_at)}</small></td>
-<td class="mono"><small>${esc(shortId(r.id))}</small></td>
+  logs(user, rows, q = {}) {
+    const latCls = (ms) => (ms == null ? '' : ms < 1000 ? 'ok' : ms < 5000 ? 'warn' : 'bad');
+    const tr = rows.map((r) => {
+      const ok = r.status === 'success';
+      return `<tr${ok ? '' : ' class="err-row"'}><td class="mono"><small>${esc(r.created_at)}</small></td>
+<td class="mono"><small><a class="req-link" href="/dashboard/logs/${esc(r.request_id || r.id)}">${esc(shortId(r.request_id || r.id))}</a></small></td>
 <td>${r.key_name ? `<strong>${esc(r.key_name)}</strong><br>` : ''}<small class="mono">${r.key_prefix ? esc(maskKey(r.key_prefix)) : '—'}</small></td>
 <td class="mono">${esc(r.model_id)}</td><td class="mono">${esc(r.provider)}</td>
-<td>${r.inTok} / ${r.outTok} / <strong>${r.total_tokens}</strong></td><td>${r.latency_ms} ms</td>
-<td>${r.status === 'success' ? '<span class="badge ok">success</span>' : `<span class="badge bad">${esc(r.error_code || r.status)}</span>`}</td></tr>`).join('');
+<td class="mono" style="font-size:12.5px">${r.inTok} / ${r.outTok} / <strong>${r.total_tokens}</strong></td><td><span class="lat ${latCls(r.latency_ms)}">${r.latency_ms} ms</span></td>
+<td>${ok ? '<span class="badge ok">success</span>' : `<span class="badge bad">${esc(r.error_code || r.status)}</span>`}</td></tr>`;
+    }).join('');
+    const opt = (v, cur, label) => `<option value="${esc(v)}"${String(cur || '') === String(v) ? ' selected' : ''}>${esc(label)}</option>`;
+    const hasF = q.status || q.model || q.provider || q.date;
+    const url = (patch) => `/dashboard/logs?status=${esc(patch.status ?? q.status ?? '')}&model=${esc(patch.model ?? q.model ?? '')}&provider=${esc(patch.provider ?? q.provider ?? '')}&date=${esc(patch.date ?? q.date ?? '')}`;
+    const pills = `<div class="pills" role="group" aria-label="Quick status filter">`
+      + `<a href="${url({ status: '' })}" class="${!q.status ? 'on' : ''}">All</a>`
+      + `<a href="${url({ status: 'success' })}" class="${q.status === 'success' ? 'on' : ''}">Success</a>`
+      + `<a href="${url({ status: 'error' })}" class="${q.status === 'error' ? 'on' : ''}">Errors</a></div>`;
+    const f = `<form class="filters" method="get" action="/dashboard/logs" aria-label="Filter logs">
+<label>Status<br><select name="status"><option value="">All</option>${opt('success', q.status, 'success')}${opt('error', q.status, 'error')}</select></label>
+<label>Model<br><select name="model"><option value="">All</option>${(q.models || []).map((m) => opt(m, q.model, m)).join('')}</select></label>
+<label>Provider<br><select name="provider"><option value="">All</option>${(q.providers || []).map((pr) => opt(pr, q.provider, pr)).join('')}</select></label>
+<label>Date<br><input type="date" name="date" value="${esc(q.date || '')}"></label>
+<button class="btn ghost sm" type="submit">Filter</button>
+${hasF ? '<a class="btn ghost sm" href="/dashboard/logs">Clear</a>' : ''}</form>`;
     return layout({ title: 'Logs', user, active: 'Logs', body: `
-<h1>Logs</h1><p class="sub">Last 100 gateway requests on your account. Columns: timestamp · request id · API key · model · provider · in/out/total tokens · latency · status.</p>
+${pageHead('Logs',
+  `${rows.length} of last 100 gateway requests on your account · API KEY, tokens in/out/total, latency · click a request id for full detail.`)}
+${pills}
+${f}
 ${tr ? `<div class="table-scroll"><table><tr><th scope="col">TIMESTAMP</th><th scope="col">REQUEST</th><th scope="col">API KEY</th><th scope="col">MODEL</th><th scope="col">PROVIDER</th><th scope="col">TOKENS</th><th scope="col">LATENCY</th><th scope="col">STATUS</th></tr>${tr}</table></div>`
-  : '<div class="empty"><strong>No requests logged yet.</strong>Logs will appear here after the API is used — nothing is fabricated.</div>'}` });
+  : (hasF
+    ? emptyState('☰', 'No requests match these filters', 'nothing in the last 100 requests matches.', '<a href="/dashboard/logs">clear filters</a> or send a request from the <a href="/dashboard/playground">playground</a>.')
+    : emptyState('☰', 'No requests logged yet', 'this account has not called the gateway.', '<a href="/dashboard/api-keys">create an API key</a> and follow the <a href="/docs/quickstart">quickstart</a> — rows appear here automatically. Nothing is fabricated.'))}
+<dialog class="drawer" id="reqdrawer" aria-label="Request detail"><div class="drawer-in">
+<div class="drawer-head"><strong>Request detail</strong><span style="margin-left:auto"></span><button class="icon-btn" data-action="drawer-close" aria-label="Close detail">✕</button></div>
+<div class="drawer-body"></div></div></dialog>` });
   },
 
-  playground(user, models) {
-    const opts = models.filter((m) => m.enabled).map((m) => `<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('') || '<option value="" disabled selected>No enabled models</option>';
+  logDetail(user, r, attempts) {
+    const att = (attempts || []).map((a) => `<tr><td class="mono">#${a.attempt_no}</td><td class="mono">${esc(a.provider)}</td><td class="mono">${esc(a.model)}</td>
+<td>${a.status === 'success' ? '<span class="badge ok">success</span>' : `<span class="badge bad">${esc(a.error_code || a.status)}</span>`}</td><td>${a.latency_ms} ms</td></tr>`).join('');
+    return layout({ title: 'Request detail', user, active: 'Logs', body: `
+<p><a href="/dashboard/logs">← Back to logs</a></p>
+<h1 class="mono" style="font-size:22px;overflow-wrap:anywhere">${esc(r.request_id || r.id)}</h1>
+<p class="sub">${esc(r.created_at)} · ${r.status === 'success' ? '<span class="badge ok">success</span>' : `<span class="badge bad">${esc(r.error_code || r.status)}</span>`}</p>
+<div class="grid c2"><div class="card"><div class="panel-head"><h3>REQUEST</h3></div>
+<dl class="kv"><dt>Model</dt><dd>${esc(r.model_id)}</dd><dt>Provider</dt><dd>${esc(r.provider)}</dd>
+<dt>API key</dt><dd>${r.key_name ? esc(r.key_name) + ' · ' : ''}${r.key_prefix ? esc(maskKey(r.key_prefix)) : 'session (playground)'}</dd>
+<dt>Latency</dt><dd>${r.latency_ms} ms</dd><dt>Status</dt><dd>${esc(r.status)}${r.error_code ? ` · ${esc(r.error_code)}` : ''}</dd></dl></div>
+<div class="card"><div class="panel-head"><h3>USAGE</h3></div>
+<dl class="kv"><dt>Input tokens</dt><dd>${Number(r.input_tokens || 0).toLocaleString()}</dd><dt>Output tokens</dt><dd>${Number(r.output_tokens || 0).toLocaleString()}</dd>
+<dt>Total tokens</dt><dd>${Number(r.total_tokens || 0).toLocaleString()}</dd>
+<dt>Est. cost</dt><dd>${r.est_cost === null || r.est_cost === undefined ? 'unknown (no registry pricing)' : '$' + Number(r.est_cost).toFixed(6)}</dd></dl>
+${r.error_code ? `<p class="field-hint">Error <code class="inline">${esc(r.error_code)}</code> — cause and next step: <a href="/docs/errors">error contract</a>.</p>` : ''}</div></div><br>
+<div class="card"><div class="panel-head"><h3>PROVIDER ATTEMPTS (${(attempts || []).length})</h3></div>
+${att ? `<div class="table-scroll"><table style="min-width:0"><tr><th scope="col">ATTEMPT</th><th scope="col">PROVIDER</th><th scope="col">MODEL</th><th scope="col">STATUS</th><th scope="col">LATENCY</th></tr>${att}</table></div>`
+  : '<p class="muted" style="font-size:13.5px;margin:0">No upstream attempts — the request was rejected before any provider contact (validation, auth, rate limit, or quota).</p>'}</div>` });
+  },
+
+  playground(user, models, preset) {
+    const enabled = models.filter((m) => m.enabled);
+    const opts = enabled.map((m) => `<option value="${esc(m.id)}"${preset === m.id ? ' selected' : ''}>${esc(m.id)}</option>`).join('') || '<option value="" disabled selected>No enabled models</option>';
     return layout({ title: 'Playground', user, active: 'Playground', body: `
-<h1>Playground</h1><p class="sub">Developer test console — runs the same gateway pipeline as <code class="inline">/v1</code> using your signed-in session (no API key needed in the browser). <span class="pg-meta" id="pgmeta"></span></p>
+${pageHead('Playground',
+  `Developer test console — runs the same gateway pipeline as <code class="inline">/v1</code> using your signed-in session (no API key in the browser). <span class="pg-meta" id="pgmeta"></span>`,
+  `<a class="btn ghost sm" href="/docs/chat-completions">API contract</a>`)}
 <meta name="csrf-token" content="${esc(user.csrf || '')}">
 <form id="pgform" aria-label="Playground"><div class="pg">
 <div class="pg-side">
@@ -570,8 +733,14 @@ ${tr ? `<div class="table-scroll"><table><tr><th scope="col">TIMESTAMP</th><th s
 <label style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:14px"><input type="checkbox" name="stream" checked style="width:auto"> Stream tokens (SSE)</label>
 <p class="field-hint">Same validation, rate limits, and router as the API. Usage is logged to your account.</p></div>
 <div class="pg-main">
-<div class="chatlog" id="chatlog" aria-live="polite"><div class="msg sys">Send a prompt below. Responses stream token-by-token when the provider is connected; usage is logged to your account.</div></div>
-<div class="pg-input"><label class="sr" for="pgprompt">Prompt</label><input id="pgprompt" type="text" name="prompt" placeholder="Type a prompt…" required autocomplete="off"><button class="btn" type="submit">Send</button></div>
+<div class="pg-toolbar"><span class="spacer" style="flex:1"></span>
+<button class="btn ghost sm" type="button" data-action="pgcopy" aria-label="Copy last response">Copy response</button>
+<button class="btn ghost sm" type="button" data-action="pgclear" aria-label="Clear conversation">Clear</button></div>
+<div class="chatlog" id="chatlog" aria-live="polite" tabindex="0" aria-label="Conversation">${enabled.length ? '<div class="msg sys">Ready — pick a model, type a prompt, press Send. Token counts come from the provider; unconnected providers reply with an honest 503, never a fake answer.</div>' : '<div class="msg sys">No models are enabled in the registry — the playground cannot run until an operator enables one. See the Models page.</div>'}</div>
+<div class="pg-input"><label class="sr" for="pgprompt">Prompt</label><input id="pgprompt" type="text" name="prompt" placeholder="Type a prompt…" required autocomplete="off"${enabled.length ? '' : ' disabled'}><button class="btn" type="submit"${enabled.length ? '' : ' disabled'}>Send</button></div>
+<div class="card"><div class="snip-head"><h3 style="margin:0">RUN THE SAME REQUEST FROM YOUR APP</h3><span class="spacer" style="flex:1"></span><button class="btn ghost sm" type="button" data-action="pgsnip-copy">Copy cURL</button></div>
+<pre id="pgsnip" style="margin:0">curl …</pre>
+<p class="table-hint">Snippet mirrors the current form (model, temperature, max tokens, prompt). Uses <code class="inline">$CIPTAMODEL_API_KEY</code> — never a real secret.</p></div>
 </div></div></form>` });
   },
 
@@ -582,39 +751,65 @@ ${tr ? `<div class="table-scroll"><table><tr><th scope="col">TIMESTAMP</th><th s
 <div class="price">${p.requests_per_day < 0 ? 'Unlimited' : Number(p.requests_per_day).toLocaleString() + '/day'}</div>
 <ul><li>${p.tokens_per_day < 0 ? 'Unlimited tokens' : Number(p.tokens_per_day).toLocaleString() + ' tokens/day'}</li><li>${p.rpm < 0 ? 'no rate cap' : p.rpm + '/min'}</li></ul></div>`;
     }).join('');
+    const reqCap = Number(plan.requests_per_day);
+    const tokCap = Number(plan.tokens_per_day);
+    const reqPct = reqCap > 0 ? Math.min(100, Math.round((usage.reqs / reqCap) * 100)) : null;
+    const tokPct = tokCap > 0 ? Math.min(100, Math.round((usage.toks / tokCap) * 100)) : null;
+    const quotaBar = (label, used, cap, pct) => cap < 0
+      ? `<div class="hbar"><span class="k">${label}</span><span class="track"><span class="fill" style="display:block;width:100%;background:#22C55E"></span></span><span class="n">${Number(used).toLocaleString()} / unlimited</span></div>`
+      : `<div class="hbar"><span class="k">${label}</span><span class="track"><span class="fill" style="display:block;width:${pct}%${pct >= 90 ? ';background:#EF4444' : pct >= 70 ? ';background:#F59E0B' : ''}"></span></span><span class="n">${Number(used).toLocaleString()} / ${Number(cap).toLocaleString()} (${pct}%)</span></div>`;
     return layout({ title: 'Billing', user, active: 'Plan', body: `
-<h1>Billing</h1><p class="sub">Plan, usage, and limits. Payments are not yet enabled — the schema already tracks plan, quota, usage, and subscription status.</p>
-<div class="grid c2">
-<div class="card"><h3>CURRENT PLAN</h3><div class="stat" style="font-size:26px;font-weight:750">${esc(sub.plan)}</div><small class="muted">Status: ${esc(sub.status)} · Used today: ${usage.reqs} req / ${Number(usage.toks).toLocaleString()} tokens</small></div>
+${pageHead('Billing',
+  'Plan, usage, and limits. Payments are not yet enabled — the schema already tracks plan, quota, usage, and subscription status.',
+  `<a class="btn ghost sm" href="/pricing">Compare plans</a>`)}
+<div class="grid c2" style="margin-bottom:var(--s4)">
+<div class="card"><h3>CURRENT PLAN</h3><div class="stat" style="font-size:26px;font-weight:750">${esc(sub.plan)}</div><small class="muted">Status: ${esc(sub.status)}</small>
+<div style="margin-top:12px">${quotaBar('Requests today', usage.reqs, reqCap, reqPct)}${quotaBar('Tokens today', usage.toks, tokCap, tokPct)}</div></div>
 <div class="card"><h3>UPGRADE</h3><p class="muted" style="font-size:14px">Self-serve upgrades and usage-based invoicing land after Phase 1. Contact us to change plans meanwhile.</p><p style="margin:0"><a class="btn ghost sm" href="/pricing">Compare plans</a></p></div>
-</div><br><div class="plans">${cards}</div>` });
+</div><div class="plans">${cards}</div>` });
   },
 
   usagePage(user, s) {
-    const stat = (l, v, sub) => `<div class="stat-cell"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${sub || ''}</div></div>`;
-    const rows = (s.daily || []).map((r) =>
-      `<tr><td class="mono">${esc(r.d)}</td><td>${r.n}</td><td>${Number(r.t).toLocaleString()}</td></tr>`).join('');
+    const kpi = (l, v, sub) => `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div><div class="f"><span>${sub || ''}</span></div></div>`;
+    const asc = [...(s.daily || [])].reverse().slice(-14);
+    const maxN = Math.max(1, ...asc.map((r) => r.n));
+    const maxT = Math.max(1, ...asc.map((r) => Number(r.t) || 0));
+    const bars = asc.map((r) => {
+      const h = Math.max(3, Math.round((Number(r.t) / maxT) * 124));
+      return `<div class="bar${r.t ? '' : ' zero'}" style="height:${h}px" title="${esc(r.d)}: ${r.n} req, ${Number(r.t).toLocaleString()} tok" role="img" aria-label="${esc(r.d)} ${Number(r.t).toLocaleString()} tokens"></div>`;
+    }).join('');
+    const barsX = asc.map((r) => `<span>${esc(String(r.d || '').slice(5))}</span>`).join('');
+    const maxM = Math.max(1, ...((s.byModel || []).map((r) => Number(r.t) || 0)));
     const byModel = (s.byModel || []).map((r) =>
-      `<tr><td class="mono">${esc(r.model_id)}</td><td>${r.n}</td><td>${Number(r.i).toLocaleString()}</td><td>${Number(r.o).toLocaleString()}</td><td>${Number(r.t).toLocaleString()}</td></tr>`).join('');
+      `<div class="hbar"><span class="k">${esc(r.model_id)}</span><span class="track"><span class="fill" style="display:block;width:${Math.max(2, Math.round((Number(r.t) / maxM) * 100))}%"></span></span><span class="n">${r.n} req · ${Number(r.i).toLocaleString()} in / ${Number(r.o).toLocaleString()} out</span></div>`).join('');
+    const maxK = Math.max(1, ...((s.byKey || []).map((r) => Number(r.t) || 0)));
     const byKey = (s.byKey || []).map((r) =>
-      `<tr><td><strong>${esc(r.name)}</strong> <small class="mono">${esc(maskKey(r.key_prefix))}</small></td><td>${r.n}</td><td>${Number(r.t).toLocaleString()}</td></tr>`).join('');
-    const empty = '<div class="empty"><strong>No data yet</strong>Metrics populate automatically once the gateway is used.</div>';
+      `<div class="hbar"><span class="k">${esc(r.name)} <span class="muted">${esc(maskKey(r.key_prefix))}</span></span><span class="track"><span class="fill" style="display:block;width:${Math.max(2, Math.round((Number(r.t) / maxK) * 100))}%"></span></span><span class="n">${r.n} req · ${Number(r.t).toLocaleString()} tok</span></div>`).join('');
+    const onboard = (what) => emptyState('▦', 'No API requests yet', `${what}. Usage metrics appear automatically after your first gateway call — nothing here is fabricated.`, '<a href="/dashboard/api-keys">create an API key</a> or <a href="/dashboard/playground">open the playground</a>.');
     return layout({ title: 'Usage', user, active: 'Usage', body: `
-<h1>Usage</h1><p class="sub">Requests, tokens, cost estimate, and breakdowns on your account. Nothing here is fabricated.</p>
-<div class="stats">
-${stat('REQUESTS', s.total, s.month + ' this month')}
-${stat('INPUT TOKENS', Number(s.inTok).toLocaleString(), '')}
-${stat('OUTPUT TOKENS', Number(s.outTok).toLocaleString(), '')}
-${stat('EST. COST', '$0.00', 'metered pricing activates with billing')}
+${pageHead('Usage',
+  `${s.total ? `${s.total} requests · ${Number(s.tokens ?? 0).toLocaleString()} tokens total · ` : ''}Requests, tokens, cost estimate, and breakdowns on your account. Nothing here is fabricated.`,
+  `<a class="btn ghost sm" href="/dashboard/logs">View logs</a>`)}
+<div class="kpis" aria-label="Usage totals">
+${kpi('REQUESTS', Number(s.total).toLocaleString(), `${s.month} this month · ${s.today} today`)}
+${kpi('INPUT TOKENS', Number(s.inTok).toLocaleString(), 'prompt tokens')}
+${kpi('OUTPUT TOKENS', Number(s.outTok).toLocaleString(), 'completion tokens')}
+${kpi('EST. COST', s.total ? '$0.00' : '—', 'metered pricing activates with billing')}
 </div>
-<div class="card"><div class="panel-head"><h3>USAGE BY MODEL</h3></div>${byModel ? `<div class="table-scroll"><table><tr><th scope="col">MODEL</th><th scope="col">REQUESTS</th><th scope="col">IN</th><th scope="col">OUT</th><th scope="col">TOTAL</th></tr>${byModel}</table></div>` : empty}</div><br>
-<div class="card"><div class="panel-head"><h3>USAGE BY API KEY</h3></div>${byKey ? `<div class="table-scroll"><table><tr><th scope="col">KEY</th><th scope="col">REQUESTS</th><th scope="col">TOKENS</th></tr>${byKey}</table></div>` : empty}</div><br>
-<div class="card"><div class="panel-head"><h3>DAILY (14 DAYS)</h3></div>${rows ? `<div class="table-scroll"><table><tr><th scope="col">DATE</th><th scope="col">REQUESTS</th><th scope="col">TOKENS</th></tr>${rows}</table></div>` : empty}</div>` });
+<div class="card" style="margin-bottom:var(--s4)"><div class="panel-head"><h3>TOKENS — LAST 14 DAYS</h3></div>${bars
+  ? `<div class="bars" aria-hidden="true">${bars}</div><div class="bars-x" aria-hidden="true">${barsX}</div>
+<div class="legend"><span><i style="background:#2563EB"></i>tokens/day</span><span>peak ${maxN} req/day · ${s.month} this month</span></div>`
+  : onboard('no daily history exists yet')}</div>
+<div class="card" style="margin-bottom:var(--s4)"><div class="panel-head"><h3>USAGE BY MODEL</h3></div>${byModel || onboard('no per-model totals exist yet')}</div>
+<div class="card" style="margin-bottom:var(--s4)"><div class="panel-head"><h3>USAGE BY API KEY</h3></div>${byKey || onboard('no key has served traffic yet')}</div>
+<div class="card"><div class="panel-head"><h3>DAILY (14 DAYS)</h3></div>${asc.length
+  ? `<div class="table-scroll"><table><tr><th scope="col">DATE</th><th scope="col">REQUESTS</th><th scope="col">TOKENS</th></tr>${[...asc].reverse().map((r) => `<tr><td class="mono">${esc(r.d)}</td><td>${r.n}</td><td>${Number(r.t).toLocaleString()}</td></tr>`).join('')}</table></div>`
+  : onboard('no daily history exists yet')}</div>` });
   },
 
   settings(user, msg, error) {
     return layout({ title: 'Settings', user, active: 'Settings', body: `
-<h1>Settings</h1><p class="sub">Profile, account security, and preferences.</p>
+${pageHead('Settings', 'Profile, account security, and preferences.')}
 ${msg ? `<div class="alert ok" role="status">${esc(msg)}</div>` : ''}
 ${error ? `<div class="alert bad" role="alert">${esc(error)}</div>` : ''}
 <div class="grid c2">
@@ -638,34 +833,46 @@ ${error ? `<div class="alert bad" role="alert">${esc(error)}</div>` : ''}
     return layout({ title: 'SDK', user: null, active: 'SDK', dash: false, body: `
 <div class="docpage-head"><p class="kicker">SDK</p><h1>Any OpenAI SDK works.</h1>
 <p class="sub" style="margin:0">CiptaModel speaks the OpenAI API — point the base URL at us and keep your code.</p></div>
-<h2>Python</h2><pre>from openai import OpenAI
+<p><strong>What does this do?</strong> It points the official OpenAI client at the CiptaModel gateway, so the same code runs through routing, retries, and metering.</p>
+<h2>Python</h2><pre>import os
+from openai import OpenAI
 
 client = OpenAI(
     base_url="${esc(config.publicApiBaseUrl)}",
-    api_key="sk-cm-live-...",
+    api_key=os.environ["CIPTAMODEL_API_KEY"],
 )
 r = client.chat.completions.create(
     model="deepseek-v4.1-flash",
     messages=[{"role": "user", "content": "Hello"}],
 )
 print(r.choices[0].message.content)</pre>
+<p><strong>What should happen?</strong> A <code class="inline">chat.completion</code> object with provider <code class="inline">usage</code> (prompt/completion/total tokens) — or an honest <code class="inline">503 provider_not_connected</code> when the provider has no credentials.</p>
 <h2>JavaScript / TypeScript</h2><pre>// npm i openai
 import OpenAI from "openai";
 const client = new OpenAI({
   baseURL: "${esc(config.publicApiBaseUrl)}",
-  apiKey: process.env.CIPTAMODEL_API_KEY,
+  apiKey: process.env.CIPTAMODEL_API_KEY, // sk-cm-live-... from Dashboard > API Keys
 });
 const r = await client.chat.completions.create({
   model: "deepseek-v4.1-flash",
   messages: [{ role: "user", content: "Hello" }],
-});</pre>` });
+});</pre>
+<h2>Response shape</h2><p><strong>What does this show?</strong> The OpenAI-compatible envelope every non-streaming reply uses — <code class="inline">model</code> echoes the public ID you sent.</p><pre>{
+  "id": "cm_chat-...",
+  "object": "chat.completion",
+  "model": "deepseek-v4.1-flash",
+  "choices": [{ "index": 0, "message": { "role": "assistant", "content": "..." }, "finish_reason": "stop" }],
+  "usage": { "prompt_tokens": 8, "completion_tokens": 12, "total_tokens": 20 }
+}</pre>
+<p><strong>What should happen?</strong> Every HTTP reply — success or error — also carries an <code class="inline">X-Request-ID</code> header for tracing in <a href="/dashboard/logs">Logs</a>.</p>` });
   },
 
   examples() {
     return layout({ title: 'Examples', user: null, active: 'Examples', dash: false, body: `
 <div class="docpage-head"><p class="kicker">EXAMPLES</p><h1>Copy-paste recipes.</h1>
 <p class="sub" style="margin:0">cURL, streaming, and model listing against the live gateway.</p></div>
-<h2>cURL — chat completion</h2><pre>curl ${esc(config.publicApiBaseUrl)}/chat/completions \\
+<p>Export your key once per shell — no example hardcodes a secret:</p><pre>export CIPTAMODEL_API_KEY="sk-cm-live-..."  # Dashboard > API Keys (shown once)</pre>
+<h2>cURL — chat completion</h2><p><strong>What does this do?</strong> Sends one chat request through validation → router → provider adapter.</p><pre>curl ${esc(config.publicApiBaseUrl)}/chat/completions \\
   -H "Authorization: Bearer $CIPTAMODEL_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"Write a haiku about APIs"}]}'</pre>
@@ -708,18 +915,23 @@ const DOCS = {
 <p>Architecture: your client → CiptaModel gateway → model router → provider adapter. Providers can be swapped without changing your integration.</p>
 <p>DeepSeek is the first live provider. Set <code class="inline">DEEPSEEK_API_KEY</code> server-side to enable inference; without it chat returns <code class="inline">503 provider_not_connected</code>.</p>` },
   quickstart: { title: 'Quickstart', phase2: false, body: `
-<ol><li>Create an account and <a href="/dashboard/api-keys">create an API key</a>.</li>
+<ol><li>Create an account and <a href="/dashboard/api-keys">create an API key</a> — copy the secret once into <code class="inline">$CIPTAMODEL_API_KEY</code>.</li>
 <li>Base URL: <code class="inline">${esc(config.publicApiBaseUrl)}</code></li>
 <li>Model: <code class="inline">deepseek-v4.1-flash</code></li></ol>
+<p><strong>What does this do?</strong> Sends one chat request through validation → router → provider adapter.</p>
 <pre>curl ${esc(config.publicApiBaseUrl)}/chat/completions \\
-  -H "Authorization: Bearer sk-cm-live-..." \\
+  -H "Authorization: Bearer $CIPTAMODEL_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{"model": "deepseek-v4.1-flash",
        "messages": [{"role": "user", "content": "Hello"}]}'</pre>
+<p><strong>What should happen?</strong> <code class="inline">200 OK</code> with a <code class="inline">chat.completion</code> body plus provider <code class="inline">usage</code> — or <code class="inline">503 provider_not_connected</code> with a next step when the provider lacks credentials.</p>
 <p>Every response and error carries an <code class="inline">X-Request-ID</code> header for tracing. Send your own <code class="inline">X-Request-ID</code> (alphanumeric, max 64 chars) or one is generated.</p>` },
   authentication: { title: 'Authentication', phase2: false, body: `
-<p>All <code class="inline">/v1</code> endpoints require a Bearer API key created in the dashboard:</p>
-<pre>Authorization: Bearer sk-cm-live-...</pre>
+<p>All <code class="inline">/v1</code> endpoints require a Bearer API key created in the dashboard. Export it once per shell — never hardcode the secret:</p>
+<pre>export CIPTAMODEL_API_KEY="sk-cm-live-..."  # Dashboard > API Keys (shown once)
+
+curl -H "Authorization: Bearer $CIPTAMODEL_API_KEY" ${esc(config.publicApiBaseUrl)}/models</pre>
+<p><strong>What should happen?</strong> <code class="inline">{"object":"list","data":[…]}</code> with the enabled registry models.</p>
 <p>Keys are stored as SHA-256 hashes. The full secret is shown <strong>once</strong> at creation. Revoked keys return <code class="inline">401 invalid_api_key</code>.</p>` },
   models: { title: 'Models', phase2: false, body: `
 <p>List enabled models with <code class="inline">GET /v1/models</code> <span class="badge ok">Available</span> — a registry read, no provider call.</p>
@@ -788,12 +1000,22 @@ const DOCS = {
 function docsPage(slug) {
   const d = DOCS[slug];
   if (!d) return null;
-  const items = Object.entries(DOCS).map(([k, v]) =>
-    `<a href="/docs/${k}" class="${k === slug ? 'active' : ''}"${k === slug ? ' aria-current="page"' : ''}>${v.title}${v.phase2 ? ' ⏳' : ''}</a>`).join('');
+  const groups = [['GET STARTED', ['introduction', 'quickstart']], ['AUTHENTICATION', ['authentication', 'api-keys']], ['REFERENCE', ['models', 'chat-completions', 'streaming', 'errors', 'rate-limits', 'usage']], ['CLIENTS', ['sdk', 'examples', 'cursor', 'cline', 'open-webui']]];
+  const titles = Object.fromEntries(Object.entries(DOCS).map(([k, v]) => [k, v.title]));
+  const items = groups.map(([g, slugs]) =>
+    `<div class="docgroup">${g}</div>` + slugs.filter((k) => titles[k]).map((k) =>
+      `<a href="/docs/${k}" class="${k === slug ? 'active' : ''}"${k === slug ? ' aria-current="page"' : ''}>${titles[k]}</a>`).join('')).join('');
+  const endpoints = {
+    models: `<div class="endpoint"><span class="method get">GET</span><code class="inline">/v1/models</code><span class="badge ok">Available</span><span class="muted" style="font-size:12.5px">Registry read — Bearer key required</span></div>`,
+    'chat-completions': `<div class="endpoint"><span class="method post">POST</span><code class="inline">/v1/chat/completions</code><span class="badge ok">Live</span><span class="muted" style="font-size:12.5px">OpenAI-compatible · SSE when stream:true</span></div>`,
+    streaming: `<div class="endpoint"><span class="method post">POST</span><code class="inline">/v1/chat/completions</code><span class="badge info">stream: true</span><span class="muted" style="font-size:12.5px">text/event-stream · ends with data: [DONE]</span></div>`,
+  };
+  const ver = `<div class="snip-head"><span class="docver">API v1 · base ${esc(config.publicApiBaseUrl)}</span><span class="spacer" style="flex:1"></span><a class="btn ghost sm" href="/docs.json">docs.json</a><a class="btn ghost sm" href="/healthz">API status</a></div>`;
   return layout({ title: d.title, user: null, active: 'Documentation', dash: false, body: `
 <div class="docpage-head"><p class="kicker">DOCS</p><h1>${esc(d.title)}${d.phase2 ? phase2Badge() : ''}</h1></div>
+${ver}
 <button class="btn ghost sm docsnav-btn" data-action="docsnav" aria-expanded="false" style="margin-bottom:12px">Sections</button>
-<div class="docs"><nav aria-label="Documentation sections" id="docsnav">${items}</nav><div class="doc-body">${d.body}</div></div>` });
+<div class="docs"><nav aria-label="Documentation sections" id="docsnav">${items}</nav><div class="doc-body">${endpoints[slug] || ''}${d.body}</div></div>` });
 }
 
 // ============================================================
@@ -941,15 +1163,45 @@ app.get('/models', async (req, reply) => {
 app.get('/dashboard/logs', async (req, reply) => {
   const user = await requireUser(req, reply);
   if (!user) return;
+  const q = req.query || {};
+  const conds = ['r.user_id = ?'];
+  const args = [user.id];
+  if (q.status === 'success') conds.push("r.status = 'success'");
+  else if (q.status === 'error') conds.push("r.status != 'success'");
+  // Allowlist filters to fixed vocabularies — never interpolated raw.
+  const models = listModels({ enabledOnly: false }).map((m) => m.id);
+  if (q.model && models.includes(q.model)) { conds.push('r.model_id = ?'); args.push(q.model); }
+  const provNames = listProviders().map((pr) => pr.name);
+  if (q.provider && provNames.includes(q.provider)) { conds.push('r.provider LIKE ?'); args.push(`${q.provider}%`); }
+  if (q.date && /^\d{4}-\d{2}-\d{2}$/.test(String(q.date))) { conds.push("date(r.created_at) = ?"); args.push(q.date); }
   const rows = getDb().prepare(`SELECT r.*, r.input_tokens inTok, r.output_tokens outTok, k.name key_name, k.key_prefix
     FROM requests r LEFT JOIN api_keys k ON k.id = r.api_key_id
-    WHERE r.user_id = ? ORDER BY r.created_at DESC LIMIT 100`).all(user.id);
-  return views.logs(user, rows);
+    WHERE ${conds.join(' AND ')} ORDER BY r.created_at DESC LIMIT 100`).all(...args);
+  const usedProviders = [...new Set(rows.map((r) => String(r.provider || '').split(':')[0]).filter(Boolean))].sort();
+  return views.logs(user, rows, { status: q.status || '', model: q.model || '', provider: q.provider || '', date: q.date || '', models, providers: usedProviders });
+});
+app.get('/dashboard/logs/:requestId', async (req, reply) => {
+  const user = await requireUser(req, reply);
+  if (!user) return;
+  const rid = String(req.params.requestId || '').slice(0, 64);
+  const row = getDb().prepare(`SELECT r.*, k.name key_name, k.key_prefix FROM requests r
+    LEFT JOIN api_keys k ON k.id = r.api_key_id
+    WHERE r.request_id = ? AND r.user_id = ?`).get(rid, user.id)
+    || getDb().prepare(`SELECT r.*, k.name key_name, k.key_prefix FROM requests r
+    LEFT JOIN api_keys k ON k.id = r.api_key_id
+    WHERE r.id = ? AND r.user_id = ?`).get(rid, user.id);
+  if (!row) return reply.code(404).type('text/html').send(errPage(404, 'Request not found',
+    'No request with that ID exists on your account.',
+    { cause: `No row matches '${rid}' for this user.`, action: '<a href="/dashboard/logs">Back to logs</a> and pick a request ID from the table.' }));
+  const attempts = row.request_id
+    ? getDb().prepare('SELECT * FROM provider_attempts WHERE request_id = ? ORDER BY attempt_no').all(row.request_id) : [];
+  return views.logDetail(user, row, attempts);
 });
 app.get('/dashboard/playground', async (req, reply) => {
   const user = await requireUser(req, reply);
   if (!user) return;
-  return views.playground(user, listModels({ enabledOnly: false }));
+  const preset = typeof req.query?.model === 'string' ? req.query.model : null;
+  return views.playground(user, listModels({ enabledOnly: false }), preset);
 });
 // Playground: session-authenticated console route that executes the SAME
 // gateway pipeline as /v1 (validation → router → adapter) without ever
@@ -1031,10 +1283,13 @@ app.get('/examples', async () => views.examples());
 app.get('/docs', async (req, reply) => reply.redirect('/docs/introduction'));
 app.get('/docs/:slug', async (req, reply) => {
   const page = docsPage(req.params.slug);
-  if (!page) return reply.code(404).type('text/html').send(errPage(404, 'Doc not found', 'That documentation page does not exist. Start from the introduction.'));
+  if (!page) return reply.code(404).type('text/html').send(errPage(404, 'Doc not found',
+    'That documentation page does not exist.',
+    { cause: `No docs page at '/docs/${String(req.params.slug).slice(0, 64)}'.`, action: 'Start from the <a href="/docs/introduction">introduction</a> or pick a section from the list below.' }));
   return page;
 });
 app.get('/docs.json', async () => ({
+  api_version: 'v1',
   base_url: config.publicApiBaseUrl,
   pages: Object.entries(DOCS).map(([slug, d]) => ({ slug, title: d.title, phase2: d.phase2 })),
 }));
@@ -1063,17 +1318,17 @@ function authenticateGateway(req) {
 function validateChatBody(body) {
   const g = config.gateway;
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-    return { ok: false, status: 400, message: 'Request body must be a JSON object.', type: 'invalid_request_error', code: 'invalid_request', param: null };
+    return { ok: false, status: 400, message: 'Request body must be a JSON object. See /docs/errors for the full error contract.', type: 'invalid_request_error', code: 'invalid_request', param: null };
   }
   const { model, messages, stream, temperature, max_tokens, top_p, stop } = body;
   if (typeof model !== 'string' || !model.trim() || model.length > 128) {
-    return { ok: false, status: 400, message: "Field 'model' is required and must be a string.", type: 'invalid_request_error', code: 'invalid_request', param: 'model' };
+    return { ok: false, status: 400, message: "Field 'model' is required and must be a string. Use an ID from GET /v1/models. See /docs/errors.", type: 'invalid_request_error', code: 'invalid_request', param: 'model' };
   }
   if (!Array.isArray(messages) || messages.length === 0) {
-    return { ok: false, status: 400, message: "Field 'messages' must be a non-empty array.", type: 'invalid_request_error', code: 'invalid_request', param: 'messages' };
+    return { ok: false, status: 400, message: "Field 'messages' must be a non-empty array of {role, content} objects. See /docs/errors.", type: 'invalid_request_error', code: 'invalid_request', param: 'messages' };
   }
   if (messages.length > g.maxMessages) {
-    return { ok: false, status: 400, message: `Field 'messages' exceeds the ${g.maxMessages}-message limit.`, type: 'invalid_request_error', code: 'invalid_request', param: 'messages' };
+    return { ok: false, status: 400, message: `Field 'messages' exceeds the ${g.maxMessages}-message limit. Shorten the conversation or summarize older turns. See /docs/errors.`, type: 'invalid_request_error', code: 'invalid_request', param: 'messages' };
   }
   const clean = [];
   let totalChars = 0;
@@ -1083,17 +1338,17 @@ function validateChatBody(body) {
       return { ok: false, status: 400, message: `messages[${i}] must be an object with {role, content}.`, type: 'invalid_request_error', code: 'invalid_request', param: 'messages' };
     }
     if (!['system', 'user', 'assistant', 'tool'].includes(m.role)) {
-      return { ok: false, status: 400, message: `messages[${i}].role must be system, user, assistant, or tool.`, type: 'invalid_request_error', code: 'invalid_request', param: 'messages' };
+      return { ok: false, status: 400, message: `messages[${i}].role must be system, user, assistant, or tool. See /docs/errors.`, type: 'invalid_request_error', code: 'invalid_request', param: 'messages' };
     }
     if (typeof m.content !== 'string') {
-      return { ok: false, status: 400, message: `messages[${i}].content must be a string.`, type: 'invalid_request_error', code: 'invalid_request', param: 'messages' };
+      return { ok: false, status: 400, message: `messages[${i}].content must be a string. See /docs/errors.`, type: 'invalid_request_error', code: 'invalid_request', param: 'messages' };
     }
     if (m.content.length > g.maxContentChars) {
-      return { ok: false, status: 400, message: `messages[${i}].content exceeds the ${g.maxContentChars}-character limit.`, type: 'invalid_request_error', code: 'context_length_exceeded', param: 'messages' };
+      return { ok: false, status: 400, message: `messages[${i}].content exceeds the ${g.maxContentChars}-character limit. Shorten that message. See /docs/errors.`, type: 'invalid_request_error', code: 'context_length_exceeded', param: 'messages' };
     }
     totalChars += m.content.length;
     if (totalChars > g.maxTotalChars) {
-      return { ok: false, status: 400, message: `Total message content exceeds the ${g.maxTotalChars}-character limit.`, type: 'invalid_request_error', code: 'context_length_exceeded', param: 'messages' };
+      return { ok: false, status: 400, message: `Total message content exceeds the ${g.maxTotalChars}-character limit. Shorten or summarize the conversation. See /docs/errors.`, type: 'invalid_request_error', code: 'context_length_exceeded', param: 'messages' };
     }
     clean.push({ role: m.role, content: m.content });
   }
@@ -1173,7 +1428,7 @@ async function runGateway({ req, reply, user, keyId, body, via }) {
   const resolved = router.resolve(chat.model);
   if (resolved.error === 'model_not_found') {
     return gatewayError(reply, requestId, {
-      status: 404, message: `Model '${chat.model}' not found. See GET /v1/models.`,
+      status: 404, message: `Model '${chat.model}' not found or not enabled. List available models with GET /v1/models, then retry with a listed ID.`,
       type: 'invalid_request_error', code: 'model_not_found', param: 'model',
     });
   }
@@ -1181,7 +1436,7 @@ async function runGateway({ req, reply, user, keyId, body, via }) {
     logUsage({ requestId, userId: user.id, keyId, modelId: chat.model, provider: (resolved.entry && resolved.entry.provider) || 'none', latencyMs: Date.now() - t0, status: 'error', errorCode: 'provider_not_connected' });
     const name = resolved.entry ? resolved.entry.provider : 'provider';
     return gatewayError(reply, requestId, {
-      status: 503, message: `The '${name}' provider is not connected yet. AI inference activates once provider credentials are configured.`,
+      status: 503, message: `The '${name}' provider is not connected, so '${chat.model}' cannot serve requests right now. Cause: provider credentials are not configured server-side. Next step: contact the operator to configure credentials, or pick a model whose provider shows as connected in /dashboard. See /docs/errors.`,
       type: 'service_unavailable', code: 'provider_not_connected', param: 'model',
     });
   }
@@ -1250,14 +1505,14 @@ async function runGateway({ req, reply, user, keyId, body, via }) {
       logUsage({ requestId, userId: user.id, keyId, modelId: chat.model, provider: entry.provider, latencyMs: Date.now() - t0, status: 'error', errorCode: code });
       finish({ error: code });
       const messages = {
-        provider_not_connected: 'The model provider is not connected yet.',
-        provider_timeout: 'The model provider timed out. Please retry.',
-        provider_rate_limit: 'The model provider is rate-limited. Please retry shortly.',
-        provider_unavailable: 'The model provider is temporarily unavailable. Please retry.',
-        provider_authentication_error: 'The gateway failed to authenticate with the model provider.',
-        provider_invalid_response: 'The model provider returned an invalid response.',
+        provider_not_connected: 'The model provider is not connected, so this request could not be served. Cause: provider credentials are not configured server-side. Next step: ask the operator to configure credentials, or use a model on a connected provider. See /docs/errors.',
+        provider_timeout: 'The model provider timed out before replying. Cause: upstream slowness or a long generation. Next step: retry the same request (safe — nothing was served) or lower max_tokens. See /docs/errors.',
+        provider_rate_limit: 'The model provider is rate-limited. Cause: upstream quota on the provider account. Next step: wait ~60s and retry. See /docs/errors.',
+        provider_unavailable: 'The model provider is temporarily unavailable. Cause: upstream outage or overload. Next step: retry shortly — transient errors are retried once automatically for non-streaming requests. See /docs/errors.',
+        provider_authentication_error: 'The gateway could not authenticate with the model provider. Cause: operator-side credential problem. Next step: report the X-Request-ID to the operator; no client change will fix this. See /docs/errors.',
+        provider_invalid_response: 'The model provider returned a response the gateway could not parse. Next step: retry; if it repeats, report the X-Request-ID. See /docs/errors.',
       };
-      return gatewayError(reply, requestId, { status, message: messages[code] || 'The model provider failed. Please retry.', type, code });
+      return gatewayError(reply, requestId, { status, message: (messages[code] || 'The model provider failed. Next step: retry shortly; if it repeats, report the X-Request-ID from this response.') + ' See /docs/errors.', type, code });
     }
     const out = attempt.result;
     const cost = estimateCost(entry, out.inputTokens, out.outputTokens);
@@ -1365,7 +1620,9 @@ app.post('/v1/chat/completions', async (req, reply) => {
 app.setNotFoundHandler(async (req, reply) => {
   if (req.url.startsWith('/v1/')) return sendErr(reply, 404, 'Unknown endpoint. See /docs.', 'not_found', 'not_found');
   if (req.url.startsWith('/api/')) return sendErr(reply, 404, 'Unknown endpoint.', 'not_found', 'not_found');
-  return reply.code(404).type('text/html').send(errPage(404, 'Page not found', 'The page you requested does not exist.'));
+  return reply.code(404).type('text/html').send(errPage(404, 'Page not found',
+    `There is nothing at '${req.url.slice(0, 120)}'.`,
+    { cause: 'The URL is wrong, moved, or you followed a stale link.', action: 'Check the address, open the <a href="/dashboard">dashboard</a>, or start from the <a href="/docs/introduction">docs introduction</a>.' }));
 });
 app.setErrorHandler(async (err, req, reply) => {
   logEvent({ level: 'error', msg: 'unhandled', route: req.url });
@@ -1382,7 +1639,9 @@ app.setErrorHandler(async (err, req, reply) => {
       status, message, type: status === 500 ? 'server_error' : 'invalid_request_error', code,
     });
   }
-  return reply.code(500).type('text/html').send(errPage(500, 'Something went wrong', 'An unexpected error occurred. Please retry — every gateway reply carries an X-Request-ID for support.'));
+  return reply.code(500).type('text/html').send(errPage(500, 'Something went wrong',
+    'An unexpected error occurred on our side — nothing you sent caused this.',
+    { cause: 'Internal failure before a useful response could be built.', action: 'Retry once. If it repeats, contact support with the URL and time — every gateway API reply carries an <code class="inline">X-Request-ID</code> header for tracing.' }));
 });
 
 // ---------- boot ----------

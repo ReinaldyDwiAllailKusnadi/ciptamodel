@@ -6,13 +6,27 @@
 // every inference path returns an explicit 503 `provider_not_connected`
 // until Phase 2 wires real provider adapters behind src/providers.js.
 //
-// Public contract (stable): https://ciptamodel.com/v1
+// Public contract (stable): https://ciptamodel.web.id/v1
 //   GET  /v1/models            (registry read — available in Phase 1)
 //   POST /v1/chat/completions  (contract defined, 503 until Phase 2)
 
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+
+// Load .env FIRST (no dotenv dependency — tiny inline loader). Must run
+// before require('./config'): config reads process.env at load time, so a
+// later load would leave production .env values (SESSION_SECRET,
+// DATABASE_PATH, BASE_URL, ...) ignored and fall back to dev defaults.
+(function loadEnv() {
+  const p = path.resolve('.env');
+  if (!fs.existsSync(p)) return;
+  for (const line of fs.readFileSync(p, 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+  }
+})();
+
 const fastify = require('fastify');
 
 const config = require('./config');
@@ -27,33 +41,24 @@ let routerOverrides = null;
 function setRouterOverrides(o) { routerOverrides = o; }
 function getRouter() { return buildRouter(dbm, config, routerOverrides || {}); }
 
-// Load .env if present (no dotenv dependency — tiny inline loader).
-(function loadEnv() {
-  const p = path.resolve('.env');
-  if (!fs.existsSync(p)) return;
-  for (const line of fs.readFileSync(p, 'utf8').split('\n')) {
-    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
-    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
-  }
-})();
-
 const app = fastify({ logger: false, trustProxy: true, bodyLimit: config.gateway.bodyLimitBytes });
 app.register(require('@fastify/cookie'), { secret: config.sessionSecret });
 app.register(require('@fastify/formbody'));
 
-// ---------- security headers ----------
-app.addHook('onSend', async (req, reply) => {
+// ---------- security headers + HTML content-type ----------
+// Single onSend hook sets both (fewer hooks, one place). HTML pages are
+// returned as strings — Fastify defaults those to text/plain, so detect
+// and correct to text/html. (ponytail: per-route reply.type() + a header
+// lib when routes need differing policies.)
+app.addHook('onSend', async (req, reply, payload) => {
   reply.header('X-Content-Type-Options', 'nosniff');
   reply.header('X-Frame-Options', 'DENY');
   reply.header('Referrer-Policy', 'strict-origin-when-cross-origin');
   reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   reply.header('Content-Security-Policy',
     "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-ancestors 'none'");
-});
-
-// HTML pages are returned as strings — serve them as text/html (Fastify
-// defaults string payloads to text/plain, which browsers render as source).
-app.addHook('onSend', async (req, reply, payload) => {
+  // HTML pages are returned as strings — Fastify defaults string payloads to
+  // text/plain, which browsers render as source. Detect and correct.
   if (typeof payload === 'string' && payload.startsWith('<!doctype html>')) {
     reply.header('Content-Type', 'text/html; charset=utf-8');
   }

@@ -15,7 +15,7 @@ const config = {
   // Override with HOST=0.0.0.0 for Docker-bridged or multi-host setups.
   host: env('HOST', '127.0.0.1'),
   baseUrl: env('BASE_URL', 'http://localhost:3000'),
-  publicApiBaseUrl: env('PUBLIC_API_BASE_URL', 'https://ciptamodel.com/v1'),
+  publicApiBaseUrl: env('PUBLIC_API_BASE_URL', 'https://ciptamodel.web.id/v1'),
   dbPath: env('DATABASE_PATH', './data/ciptamodel.db'),
   sessionSecret: env('SESSION_SECRET', 'dev-only-secret-change-me-32-chars-min'),
   redisUrl: env('REDIS_URL', ''), // empty => in-memory limiter (see limits.js)

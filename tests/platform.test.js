@@ -8,7 +8,7 @@ const fs = require('fs');
 
 process.env.DATABASE_PATH = './data/test.db';
 process.env.SESSION_SECRET = 'test-secret-min-32-characters-long-ok';
-process.env.PUBLIC_API_BASE_URL = 'https://ciptamodel.com/v1';
+process.env.PUBLIC_API_BASE_URL = 'https://ciptamodel.web.id/v1';
 
 for (const suffix of ['', '-wal', '-shm', '-journal']) {
   try { fs.unlinkSync('./data/test.db' + suffix); } catch {}

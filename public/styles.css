@@ -56,6 +56,7 @@ pre code{background:none;color:inherit;padding:0}
 .btn.sm{min-height:32px;padding:5px 12px;font-size:12.5px}
 .btn.lg{min-height:48px;padding:12px 28px;font-size:15px}
 .btn:disabled{opacity:.55;cursor:wait}
+.btn:active{transform:translateY(1px)}
 
 /* ---------- badges / alerts ---------- */
 .badge{display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600;border:1px solid transparent;white-space:nowrap}
@@ -101,6 +102,7 @@ td .sub{display:block;font-size:12px;color:var(--muted);margin-top:2px}
 .pubnav nav{margin-left:auto;display:flex;align-items:center;gap:4px;font-size:14px}
 .pubnav nav a.navlink{color:var(--muted);padding:8px 12px;border-radius:8px;font-weight:500}
 .pubnav nav a.navlink:hover{color:var(--ink);background:#F1F5F9;text-decoration:none}
+.pubnav nav a.navlink.active{color:var(--ink);background:#F1F5F9}
 .pubnav nav .btn{margin-left:8px}
 .pubmenu-btn{display:none;background:none;border:1px solid var(--line-strong);border-radius:8px;padding:7px 11px;font-size:16px;cursor:pointer;color:var(--ink);margin-left:auto}
 
@@ -145,6 +147,7 @@ td .sub{display:block;font-size:12px;color:var(--muted);margin-top:2px}
 
 /* ---------- public sections ---------- */
 .section{padding:var(--s20) 0}
+section[id]{scroll-margin-top:72px}
 .section.tight{padding:var(--s12) 0}
 .section-head{max-width:44rem;margin-bottom:var(--s8)}
 .section-head h2{margin-bottom:var(--s2)}

@@ -472,7 +472,7 @@ describe('platform', () => {
   it('dashboard pages render with honest empty states', async () => {
     for (const [url, needle] of [
       ['/dashboard', 'SYSTEM STATUS'],
-      ['/dashboard/api-keys', 'Manajemen API Keys'],
+      ['/dashboard/api-keys', '<h1>API Keys</h1>'],
       ['/dashboard/models', 'Registry'],
       ['/dashboard/logs', 'API KEY'],
       ['/dashboard/usage', 'USAGE BY MODEL'],

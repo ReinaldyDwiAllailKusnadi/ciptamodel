@@ -255,11 +255,11 @@ function layout({ title, user, active, body, dash = true }) {
   if (!dash) return publicShell({ title, body: `<div class="wrap section tight">${body}</div>` });
   const links = DASH_NAV.map(([label, href, kind]) => kind === 'sec'
     ? `<div class="navsec">${label}</div>`
-    : `<a href="${href}" class="${active === label ? 'active' : ''}">${label}</a>`).join('');
+    : `<a href="${href}" class="${active === label ? 'active' : ''}"${active === label ? ' aria-current="page"' : ''}>${label}</a>`).join('');
   const side = `<aside class="sidebar" aria-label="Dashboard navigation"><div class="brand"><span class="mark">C<i>.</i></span>CiptaModel</div>
        <nav class="nav">${links}</nav>
        <div class="side-foot">${user ? `${esc(user.email)}<br><a href="/logout" style="color:#93c5fd">Sign out</a>` : '<a href="/login" style="color:#93c5fd">Sign in</a>'}</div></aside>`;
-  return `<!doctype html><html lang="id"><head><meta charset="utf-8">
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#08111F">
 <title>${esc(title)} · CiptaModel</title><link rel="stylesheet" href="${CSS}"></head><body>
@@ -273,7 +273,7 @@ function layout({ title, user, active, body, dash = true }) {
 
 function publicShell({ title, body, desc }) {
   const d = desc || 'CiptaModel — one OpenAI-compatible API for multiple AI models. One key, one base URL.';
-  return `<!doctype html><html lang="id"><head><meta charset="utf-8">
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="description" content="${esc(d)}">
 <meta name="theme-color" content="#08111F">
@@ -281,7 +281,7 @@ function publicShell({ title, body, desc }) {
 <a class="skip" href="#main">Skip to content</a>
 <header class="pubnav" id="pubnav"><div class="pubnav-in"><a class="pubbrand" href="/"><span class="mark">C<i>.</i></span>Cipta<span>Model</span></a>
 <button class="pubmenu-btn" data-action="pubmenu" aria-label="Toggle menu" aria-expanded="false">☰</button>
-<nav aria-label="Public"><a class="navlink" href="/models">Models</a><a class="navlink" href="/pricing">Pricing</a><a class="navlink" href="/docs">Docs</a><a class="navlink" href="https://github.com/ReinaldyDwiAllailKusnadi/ciptamodel">GitHub</a><a class="navlink" href="/login">Sign in</a><a class="btn sm" href="/register">Get started</a></nav></div></header>
+<nav aria-label="Public"><a class="navlink" href="/#how-it-works">Product</a><a class="navlink" href="/models">Models</a><a class="navlink" href="/docs">Docs</a><a class="navlink" href="/pricing">Pricing</a><a class="navlink" href="https://github.com/ReinaldyDwiAllailKusnadi/ciptamodel">GitHub</a><a class="navlink" href="/login">Sign in</a><a class="btn sm" href="/register">Get Started</a></nav></div></header>
 <main id="main">${body}</main>
 <footer class="pubfoot"><div class="pubfoot-in">
 <div><a class="pubbrand" href="/"><span class="mark">C<i>.</i></span>Cipta<span>Model</span></a>
@@ -323,13 +323,13 @@ const views = {
 <li>${p.rpm < 0 ? 'No rate cap' : `${p.rpm} req/min`}</li></ul></div>`).join('');
     return publicShell({ title: 'One API. Multiple AI Models', body: `
 <section class="hero-band"><div class="wrap hero-grid">
-<div><p class="eyebrow">UNIFIED AI API GATEWAY</p>
+<div><p class="eyebrow">OPENAI-COMPATIBLE AI GATEWAY</p>
 <h1>One API.<br>Multiple AI Models.</h1>
 <p class="hero-sub">CiptaModel gives developers a single OpenAI-compatible interface for many AI models. One <code class="inline">sk-cm-…</code> key, one base URL — swap providers without rewriting your integration.</p>
-<div class="hero-cta"><a class="btn lg" href="/register">Get started free</a><a class="btn light lg" href="/docs">Read the docs</a></div>
+<div class="hero-cta"><a class="btn lg" href="/register">Start building</a><a class="btn light lg" href="/docs">Read documentation</a></div>
 <div class="hero-meta"><span><span class="dot"></span>OpenAI-compatible</span><span><span class="dot"></span>Streaming (SSE)</span><span><span class="dot"></span>X-Request-ID tracing</span></div></div>
 <div class="term" role="img" aria-label="Example API request through the CiptaModel gateway">
-<div class="term-bar"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span><span class="term-title">POST /v1/chat/completions</span><span class="term-live"><i></i>LIVE</span></div>
+<div class="term-bar"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span><span class="term-title">POST /v1/chat/completions</span><span class="term-live"><i></i>EXAMPLE</span></div>
 <pre class="term-body"><span class="c"># one base URL, one key — any OpenAI client</span>
 <span class="k">curl</span> ${esc(config.publicApiBaseUrl)}/chat/completions \\
   -H <span class="s">"Authorization: Bearer sk-cm-live-••••••••"</span> \\
@@ -344,7 +344,7 @@ const views = {
 </div></div>
 <div class="wrap" style="padding-bottom:var(--s12)">${route}</div></section>
 
-<section class="section"><div class="wrap">
+<section class="section" id="how-it-works"><div class="wrap">
 <div class="section-head"><p class="kicker">HOW IT WORKS</p><h2>From key to inference in four steps.</h2>
 <p>Your client only ever talks to CiptaModel. Everything behind the base URL — providers, failover, metering — is our problem.</p></div>
 <div class="steps">
@@ -355,9 +355,9 @@ const views = {
 </div></div></section>
 
 <section class="section split"><div class="wrap">
-<div class="section-head"><p class="kicker">MODEL REGISTRY</p><h2>One API, a growing provider ecosystem.</h2>
+<div class="section-head"><p class="kicker">MODEL REGISTRY</p><h2>One API, backed by a provider registry.</h2>
 <p>Public model IDs stay stable even when upstream providers change. Only enabled models accept traffic. <a href="/models">Open the registry →</a></p></div>
-<div class="table-scroll"><table><tr><th>MODEL</th><th>PROVIDER</th><th>CONTEXT</th><th>STATUS</th><th>CAPABILITIES</th></tr>
+<div class="table-scroll"><table><tr><th scope="col">MODEL</th><th scope="col">PROVIDER</th><th scope="col">CONTEXT</th><th scope="col">STATUS</th><th scope="col">CAPABILITIES</th></tr>
 ${(listModelsSafe()).map((m) => `<tr><td><strong>${esc(m.display_name)}</strong><span class="sub mono">${esc(m.id)}</span></td>
 <td class="mono">${esc(m.provider)}</td><td style="white-space:nowrap">${Number(m.context_window).toLocaleString()}</td>
 <td>${m.enabled ? '<span class="badge ok">Available</span>' : '<span class="badge bad">Disabled</span>'}</td>
@@ -421,7 +421,7 @@ print(r.choices[0].message.content)</pre></div>
 <section class="section"><div class="wrap">
 <div class="section-head"><p class="kicker">FAQ</p><h2>Honest answers.</h2></div>
 <div class="faq">
-<details open><summary>Is the API live?</summary><p>Yes — <code class="inline">POST /v1/chat/completions</code> serves real DeepSeek inference through the gateway with a Bearer key. Without server-side provider credentials it returns an honest <code class="inline">503 provider_not_connected</code> instead of a fake reply.</p></details>
+<details open><summary>Is the API live?</summary><p>Yes — <code class="inline">POST /v1/chat/completions</code> proxies real DeepSeek inference when <code class="inline">DEEPSEEK_API_KEY</code> is configured server-side. Without provider credentials it returns an honest <code class="inline">503 provider_not_connected</code> instead of a fake reply.</p></details>
 <details><summary>Which clients are supported?</summary><p>Anything speaking OpenAI-compatible HTTP: Cursor, Cline, Roo Code, Claude Code, Aider, Open WebUI, and the official OpenAI SDKs. Setup guides live in <a href="/docs">Docs</a>.</p></details>
 <details><summary>Can I change providers later?</summary><p>Yes — that is the point. Your client talks to CiptaModel; the router picks the provider. Model IDs stay stable.</p></details>
 </div></div></section>
@@ -489,10 +489,10 @@ ${stat('Error rate', (s.errRate ?? '0%'), 'failed / total · p50 ' + (s.p50 ?? '
 </div>
 <div class="grid c2">
 <div class="card"><div class="panel-head"><h3>SYSTEM STATUS — PROVIDERS</h3></div>
-<div class="table-scroll"><table style="min-width:0"><tr><th>PROVIDER</th><th>REGISTRY</th><th>CONNECTION</th></tr>${provRows}</table></div>
+<div class="table-scroll"><table style="min-width:0"><tr><th scope="col">PROVIDER</th><th scope="col">REGISTRY</th><th scope="col">CONNECTION</th></tr>${provRows}</table></div>
 <p><small class="muted">Live DeepSeek adapter when <code class="inline">DEEPSEEK_API_KEY</code> is configured server-side, otherwise honest <code class="inline">503 provider_not_connected</code> — statuses flip without API changes.</small></p></div>
 <div class="card"><div class="panel-head"><h3>RECENT REQUESTS</h3><span class="spacer" style="flex:1"></span><a href="/dashboard/logs"><small>All logs →</small></a></div>
-${recent ? `<div class="table-scroll"><table><tr><th>TIME</th><th>MODEL</th><th>TOKENS</th><th>STATUS</th></tr>${recent}</table></div>`
+${recent ? `<div class="table-scroll"><table><tr><th scope="col">TIME</th><th scope="col">MODEL</th><th scope="col">TOKENS</th><th scope="col">STATUS</th></tr>${recent}</table></div>`
   : '<div class="empty"><strong>No requests yet</strong>Logs will appear here once the gateway is used.</div>'}</div>
 </div>` });
   },
@@ -512,15 +512,15 @@ ${recent ? `<div class="table-scroll"><table><tr><th>TIME</th><th>MODEL</th><th>
 </tr>`;
     }).join('');
     return layout({ title: 'API Keys', user, active: 'API Keys', body: `
-<h1>Manajemen API Keys</h1>
-<p class="sub">Kelola kunci API untuk menghubungkan Cursor, Cline, Open WebUI, dan aplikasi developer. Secrets are SHA-256 hashed and shown once.</p>
+<h1>API Keys</h1>
+<p class="sub">Create keys for Cursor, Cline, Open WebUI, or any OpenAI-compatible client. Secrets are SHA-256 hashed and shown once.</p>
 ${newSecret ? `<div class="alert warn" role="alert"><strong>Copy this key now — it is shown in full only once.</strong> Afterwards only the masked value is visible.</div>
 <div class="secret-box"><code>${esc(newSecret)}</code>
 <button class="btn sm" data-action="copy" data-copy="${esc(newSecret)}" data-label="Copy">Copy</button></div><br>` : ''}
 <div class="card"><div class="panel-head"><h3>CREATE KEY</h3></div>
-<form method="post" action="/dashboard/api-keys" class="row" aria-label="Create API key"><input type="hidden" name="_csrf" value="${esc(user.csrf || '')}"><label class="sr" for="keyname">Key name</label><input id="keyname" type="text" name="name" placeholder="Key name, e.g. Cursor Development" required maxlength="80" style="max-width:280px;flex:1"><button class="btn">+ Buat Key Baru</button></form></div><br>
-<div class="table-scroll"><table><tr><th>NAMA KUNCI</th><th>API KEY</th><th>USAGE</th><th>TERAKHIR DIPAKAI</th><th>STATUS</th><th>AKSI</th></tr>
-${rows || '<tr><td colspan="6"><div class="empty"><strong>Belum ada API key</strong>Buat key pertama untuk mulai memakai gateway.</div></td></tr>'}</table></div>
+<form method="post" action="/dashboard/api-keys" class="row" aria-label="Create API key"><input type="hidden" name="_csrf" value="${esc(user.csrf || '')}"><label class="sr" for="keyname">Key name</label><input id="keyname" type="text" name="name" placeholder="Key name, e.g. Cursor Development" required maxlength="80" style="max-width:280px;flex:1"><button class="btn">+ Create new key</button></form></div><br>
+<div class="table-scroll"><table><tr><th scope="col">KEY NAME</th><th scope="col">API KEY</th><th scope="col">USAGE</th><th scope="col">LAST USED</th><th scope="col">STATUS</th><th scope="col">ACTIONS</th></tr>
+${rows || '<tr><td colspan="6"><div class="empty"><strong>No API keys yet.</strong> Create your first key to start using the gateway.</div></td></tr>'}</table></div>
 <p><small class="muted">Secrets can never be recovered after this page. Quotas follow your <a href="/dashboard/billing">plan</a>.</small></p>` });
   },
 
@@ -538,7 +538,7 @@ ${rows || '<tr><td colspan="6"><div class="empty"><strong>Belum ada API key</str
     }).join('');
     return layout({ title: 'Models', user, active: 'Models', body: `
 <h1>Models</h1><p class="sub">Registry data — public model IDs stay stable even when upstream providers change. Only enabled models accept traffic.</p>
-<div class="table-scroll"><table><tr><th>MODEL</th><th>PROVIDER</th><th>CONTEXT</th><th>CAPABILITIES</th><th>PRICING</th><th>STATUS</th></tr>
+<div class="table-scroll"><table><tr><th scope="col">MODEL</th><th scope="col">PROVIDER</th><th scope="col">CONTEXT</th><th scope="col">CAPABILITIES</th><th scope="col">PRICING</th><th scope="col">STATUS</th></tr>
 ${rows || '<tr><td colspan="6"><div class="empty"><strong>No models in registry.</strong></div></td></tr>'}</table></div>
 <p><small class="muted">Prices are registry values per 1K tokens; metered billing activates with payments. Disabled providers return honest <code class="inline">503 provider_not_connected</code>.</small></p>` });
   },
@@ -552,12 +552,12 @@ ${rows || '<tr><td colspan="6"><div class="empty"><strong>No models in registry.
 <td>${r.status === 'success' ? '<span class="badge ok">success</span>' : `<span class="badge bad">${esc(r.error_code || r.status)}</span>`}</td></tr>`).join('');
     return layout({ title: 'Logs', user, active: 'Logs', body: `
 <h1>Logs</h1><p class="sub">Last 100 gateway requests on your account. Columns: timestamp · request id · API key · model · provider · in/out/total tokens · latency · status.</p>
-${tr ? `<div class="table-scroll"><table><tr><th>TIMESTAMP</th><th>REQUEST</th><th>API KEY</th><th>MODEL</th><th>PROVIDER</th><th>TOKENS</th><th>LATENCY</th><th>STATUS</th></tr>${tr}</table></div>`
+${tr ? `<div class="table-scroll"><table><tr><th scope="col">TIMESTAMP</th><th scope="col">REQUEST</th><th scope="col">API KEY</th><th scope="col">MODEL</th><th scope="col">PROVIDER</th><th scope="col">TOKENS</th><th scope="col">LATENCY</th><th scope="col">STATUS</th></tr>${tr}</table></div>`
   : '<div class="empty"><strong>No requests logged yet.</strong>Logs will appear here after the API is used — nothing is fabricated.</div>'}` });
   },
 
   playground(user, models) {
-    const opts = models.filter((m) => m.enabled).map((m) => `<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('');
+    const opts = models.filter((m) => m.enabled).map((m) => `<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('') || '<option value="" disabled selected>No enabled models</option>';
     return layout({ title: 'Playground', user, active: 'Playground', body: `
 <h1>Playground</h1><p class="sub">Developer test console — runs the same gateway pipeline as <code class="inline">/v1</code> using your signed-in session (no API key needed in the browser). <span class="pg-meta" id="pgmeta"></span></p>
 <meta name="csrf-token" content="${esc(user.csrf || '')}">
@@ -607,9 +607,9 @@ ${stat('INPUT TOKENS', Number(s.inTok).toLocaleString(), '')}
 ${stat('OUTPUT TOKENS', Number(s.outTok).toLocaleString(), '')}
 ${stat('EST. COST', '$0.00', 'metered pricing activates with billing')}
 </div>
-<div class="card"><div class="panel-head"><h3>USAGE BY MODEL</h3></div>${byModel ? `<div class="table-scroll"><table><tr><th>MODEL</th><th>REQUESTS</th><th>IN</th><th>OUT</th><th>TOTAL</th></tr>${byModel}</table></div>` : empty}</div><br>
-<div class="card"><div class="panel-head"><h3>USAGE BY API KEY</h3></div>${byKey ? `<div class="table-scroll"><table><tr><th>KEY</th><th>REQUESTS</th><th>TOKENS</th></tr>${byKey}</table></div>` : empty}</div><br>
-<div class="card"><div class="panel-head"><h3>DAILY (14 DAYS)</h3></div>${rows ? `<div class="table-scroll"><table><tr><th>DATE</th><th>REQUESTS</th><th>TOKENS</th></tr>${rows}</table></div>` : empty}</div>` });
+<div class="card"><div class="panel-head"><h3>USAGE BY MODEL</h3></div>${byModel ? `<div class="table-scroll"><table><tr><th scope="col">MODEL</th><th scope="col">REQUESTS</th><th scope="col">IN</th><th scope="col">OUT</th><th scope="col">TOTAL</th></tr>${byModel}</table></div>` : empty}</div><br>
+<div class="card"><div class="panel-head"><h3>USAGE BY API KEY</h3></div>${byKey ? `<div class="table-scroll"><table><tr><th scope="col">KEY</th><th scope="col">REQUESTS</th><th scope="col">TOKENS</th></tr>${byKey}</table></div>` : empty}</div><br>
+<div class="card"><div class="panel-head"><h3>DAILY (14 DAYS)</h3></div>${rows ? `<div class="table-scroll"><table><tr><th scope="col">DATE</th><th scope="col">REQUESTS</th><th scope="col">TOKENS</th></tr>${rows}</table></div>` : empty}</div>` });
   },
 
   settings(user, msg, error) {
@@ -690,7 +690,7 @@ const r = await client.chat.completions.create({
     return publicShell({ title: 'Models', body: `
 <div class="wrap section"><div class="section-head"><p class="kicker">MODEL REGISTRY</p><h2>Models on the gateway.</h2>
 <p>Public IDs stay stable even when upstream providers change. Only enabled models accept traffic. <a href="/register">Get a key →</a></p></div>
-<div class="table-scroll"><table><tr><th>MODEL</th><th>PROVIDER</th><th>CONTEXT</th><th>CAPABILITIES</th><th>STATUS</th></tr>
+<div class="table-scroll"><table><tr><th scope="col">MODEL</th><th scope="col">PROVIDER</th><th scope="col">CONTEXT</th><th scope="col">CAPABILITIES</th><th scope="col">STATUS</th></tr>
 ${rows || '<tr><td colspan="5">No models in registry.</td></tr>'}</table></div>
 <p><small class="muted">Full pricing, fallbacks, and per-key usage live in the <a href="/dashboard">dashboard</a> after sign-in.</small></p></div>` });
   },
@@ -747,7 +747,7 @@ const DOCS = {
 <p>Create keys at <a href="/dashboard/api-keys">Dashboard → API Keys</a>. Format: <code class="inline">sk-cm-live-…</code>. Manage lifecycle (revoke/delete) there; usage per key appears under <a href="/dashboard/usage">Usage</a>.</p>` },
   errors: { title: 'Errors', phase2: false, body: `
 <p>Errors follow the OpenAI shape: <code class="inline">{"error": {"message", "type", "code"}}</code>. No stack traces or provider credentials are ever exposed.</p>
-<table><tr><th>HTTP</th><th>CODE</th><th>MEANING</th></tr>
+<table><tr><th scope="col">HTTP</th><th scope="col">CODE</th><th scope="col">MEANING</th></tr>
 <tr><td>400</td><td class="mono">invalid_request</td><td>Bad body / unknown field</td></tr>
 <tr><td>401</td><td class="mono">invalid_api_key</td><td>Missing, unknown or revoked key</td></tr>
 <tr><td>404</td><td class="mono">model_not_found</td><td>Unknown or disabled model</td></tr>
@@ -789,7 +789,7 @@ function docsPage(slug) {
   const d = DOCS[slug];
   if (!d) return null;
   const items = Object.entries(DOCS).map(([k, v]) =>
-    `<a href="/docs/${k}" class="${k === slug ? 'active' : ''}">${v.title}${v.phase2 ? ' ⏳' : ''}</a>`).join('');
+    `<a href="/docs/${k}" class="${k === slug ? 'active' : ''}"${k === slug ? ' aria-current="page"' : ''}>${v.title}${v.phase2 ? ' ⏳' : ''}</a>`).join('');
   return layout({ title: d.title, user: null, active: 'Documentation', dash: false, body: `
 <div class="docpage-head"><p class="kicker">DOCS</p><h1>${esc(d.title)}${d.phase2 ? phase2Badge() : ''}</h1></div>
 <button class="btn ghost sm docsnav-btn" data-action="docsnav" aria-expanded="false" style="margin-bottom:12px">Sections</button>

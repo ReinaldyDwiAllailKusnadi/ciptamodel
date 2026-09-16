@@ -131,3 +131,10 @@ function meta(ms, usage) {
 }
 window.playgroundSend = playgroundSend;
 document.getElementById('pgform')?.addEventListener('submit', playgroundSend);
+
+// Public nav active state (server doesn't pass page to publicShell).
+for (const a of document.querySelectorAll('.pubnav nav a.navlink')) {
+  try {
+    if (new URL(a.href).pathname === location.pathname) { a.classList.add('active'); a.setAttribute('aria-current', 'page'); }
+  } catch { /* ignore */ }
+}
